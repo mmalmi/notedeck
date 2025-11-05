@@ -1,0 +1,99 @@
+use crate::Session;
+use std::collections::HashMap;
+
+pub struct DeviceRecord {
+    pub device_id: String,
+    pub public_key: String,
+    pub active_session: Option<Session>,
+    pub inactive_sessions: Vec<Session>,
+    pub is_stale: bool,
+    pub stale_timestamp: Option<u64>,
+    pub last_activity: Option<u64>,
+}
+
+pub struct UserRecord {
+    pub user_id: String,
+    device_records: HashMap<String, DeviceRecord>,
+    is_stale: bool,
+    stale_timestamp: Option<u64>,
+}
+
+impl UserRecord {
+    pub fn new(user_id: String) -> Self {
+        Self {
+            user_id,
+            device_records: HashMap::new(),
+            is_stale: false,
+            stale_timestamp: None,
+        }
+    }
+
+    pub fn upsert_session(&mut self, device_id: Option<&str>, session: Session) {
+        let device_id = device_id.unwrap_or("unknown").to_string();
+
+        let device = self.device_records.entry(device_id.clone()).or_insert_with(|| {
+            DeviceRecord {
+                device_id: device_id.clone(),
+                public_key: String::new(),
+                active_session: None,
+                inactive_sessions: Vec::new(),
+                is_stale: false,
+                stale_timestamp: None,
+                last_activity: Some(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()),
+            }
+        });
+
+        if let Some(old_session) = device.active_session.take() {
+            device.inactive_sessions.push(old_session);
+        }
+
+        device.active_session = Some(session);
+        device.last_activity = Some(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs());
+    }
+
+    pub fn get_active_sessions(&self) -> Vec<&Session> {
+        if self.is_stale {
+            return Vec::new();
+        }
+
+        let mut sessions: Vec<&Session> = self
+            .device_records
+            .values()
+            .filter(|d| !d.is_stale)
+            .filter_map(|d| d.active_session.as_ref())
+            .collect();
+
+        sessions.sort_by(|a, b| {
+            let a_can_send = a.state.their_next_nostr_public_key.is_some()
+                && a.state.our_current_nostr_key.is_some();
+            let b_can_send = b.state.their_next_nostr_public_key.is_some()
+                && b.state.our_current_nostr_key.is_some();
+
+            match (a_can_send, b_can_send) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
+
+        sessions
+    }
+
+    pub fn close(&mut self) {
+        for device in self.device_records.values_mut() {
+            if let Some(session) = device.active_session.take() {
+                session.close();
+            }
+            for session in device.inactive_sessions.drain(..) {
+                session.close();
+            }
+        }
+        self.device_records.clear();
+    }
+}
