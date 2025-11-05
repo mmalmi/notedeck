@@ -5,6 +5,8 @@ on:
     branches:
       - master
       - ci
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - "*"
@@ -306,4 +308,30 @@ jobs:
           put $ARTIFACTS/DamusNotedeckInstaller-aarch64.exe/*
           bye
           EOF
+
+  github-release:
+    name: Upload to GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [packaging, macos-dmg, windows-installer]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        with:
+          files: |
+            notedeck-x86_64.rpm/*
+            notedeck-x86_64.deb/*
+            notedeck-x86_64.dmg/*
+            notedeck-aarch64.rpm/*
+            notedeck-aarch64.deb/*
+            notedeck-aarch64.dmg/*
+            DamusNotedeckInstaller-x86_64.exe/*
+            DamusNotedeckInstaller-aarch64.exe/*
+          fail_on_unmatched_files: false
 
