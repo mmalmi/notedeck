@@ -1555,7 +1555,7 @@ dependencies = [
 [[package]]
 name = "egui_nav"
 version = "0.2.0"
-source = "git+https://github.com/mmalmi/egui-nav?rev=d54285dbd12643174d5b506f80dfc07ff000c65a#d54285dbd12643174d5b506f80dfc07ff000c65a"
+source = "git+https://github.com/mmalmi/egui-nav?rev=344f83da71920e573a5dcf28d7ced24fecc6b91a#344f83da71920e573a5dcf28d7ced24fecc6b91a"
 dependencies = [
  "bitflags 2.9.1",
  "egui",
@@ -2566,7 +2566,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -6284,7 +6284,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "319c70195101a93f56db4c74733e272d720768e13471f400c78406a326b172b0"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
