@@ -224,6 +224,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
                 let is_selected = self.query.selected_index == (i as i32 + 1);
                 if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
+                    .with_accounts(self.note_context.accounts)
                     .with_selection(is_selected)).clicked() {
                     return Some(SearchAction::NavigateToProfile(pubkey));
                 }
@@ -277,10 +278,12 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, pubkey.bytes()).ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
+                        pubkey,
                         query,
                         is_selected,
                         ui.available_width(),
                         self.note_context.img_cache,
+                        self.note_context.accounts,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -650,10 +653,12 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
+    pubkey: &'a Pubkey,
     _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
+    accounts: &'a notedeck::Accounts,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -665,6 +670,8 @@ fn recent_profile_item<'a>(
             vec2(width, min_img_size + 8.0),
             egui::Sense::click()
         );
+
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if is_selected {
             ui.painter().rect_filled(
@@ -690,7 +697,8 @@ fn recent_profile_item<'a>(
         ui.put(
             pfp_rect,
             &mut ProfilePic::new(cache, get_profile_url(profile))
-                .size(min_img_size),
+                .size(min_img_size)
+                .with_follow_check(pubkey, accounts),
         );
 
         let name = get_display_name(profile).name();
