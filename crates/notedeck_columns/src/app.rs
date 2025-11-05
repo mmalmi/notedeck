@@ -884,12 +884,16 @@ fn timelines_view(
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
+                let current_route = get_active_columns(ctx.accounts, &app.decks_cache)
+                    .selected()
+                    .map(|col| col.router().top());
                 let side_panel = DesktopSidePanel::new(
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
                     ctx.i18n,
                     ctx.ndb,
                     ctx.img_cache,
+                    current_route,
                 )
                 .show(ui);
 
