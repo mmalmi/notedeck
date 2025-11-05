@@ -1,11 +1,13 @@
 pub mod account_login_view;
 pub mod accounts;
 pub mod add_column;
+pub mod chat;
 pub mod column;
 pub mod configure_deck;
 pub mod edit_deck;
 pub mod images;
 pub mod mentions_picker;
+pub mod messages;
 pub mod note;
 pub mod onboarding;
 pub mod post;
@@ -24,6 +26,8 @@ pub mod wallet;
 pub mod widgets;
 
 pub use accounts::AccountsView;
+pub use chat::ChatView;
+pub use messages::MessagesView;
 pub use note::{PostReplyView, PostView};
 pub use preview::{Preview, PreviewApp, PreviewConfig};
 pub use profile::ProfileView;

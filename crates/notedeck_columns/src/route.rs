@@ -33,6 +33,8 @@ pub enum Route {
     CustomizeZapAmount(NoteZapTargetOwned),
     Following(Pubkey),
     FollowedBy(Pubkey),
+    Messages,
+    Chat(String),
 }
 
 impl Route {
@@ -147,6 +149,13 @@ impl Route {
             Route::FollowedBy(pubkey) => {
                 writer.write_token("followed_by");
                 writer.write_token(&pubkey.hex());
+            }
+            Route::Messages => {
+                writer.write_token("messages");
+            }
+            Route::Chat(id) => {
+                writer.write_token("chat");
+                writer.write_token(id);
             }
         }
     }
@@ -285,6 +294,19 @@ impl Route {
                         Ok(Route::FollowedBy(pubkey))
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("messages")?;
+                        Ok(Route::Messages)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("chat")?;
+                        let id = p.pull_token()?.to_string();
+                        Ok(Route::Chat(id))
+                    })
+                },
             ],
         )
     }
@@ -412,6 +434,16 @@ impl Route {
                 i18n,
                 "Followed by",
                 "Column title for followers"
+            )),
+            Route::Messages => ColumnTitle::formatted(tr!(
+                i18n,
+                "Messages",
+                "Column title for direct messages"
+            )),
+            Route::Chat(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Chat",
+                "Column title for individual chat"
             )),
         }
     }

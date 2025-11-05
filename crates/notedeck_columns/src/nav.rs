@@ -32,7 +32,7 @@ use crate::{
     Damus,
 };
 
-use egui::scroll_area::ScrollAreaOutput;
+use egui::{scroll_area::ScrollAreaOutput, ScrollArea};
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
@@ -74,6 +74,7 @@ pub enum RenderNavAction {
     RepostAction(RepostAction),
     ShowFollowing(enostr::Pubkey),
     ShowFollowers(enostr::Pubkey),
+    ScrollToTop,
 }
 
 pub enum SwitchingAction {
@@ -579,6 +580,10 @@ fn process_render_nav_action(
                 RouterType::Stack,
             ))
         }
+        RenderNavAction::ScrollToTop => {
+            app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col).request_scroll_to_top();
+            None
+        }
     };
 
     if let Some(action) = router_action {
@@ -602,6 +607,21 @@ fn render_nav_body(
     col: usize,
     inner_rect: egui::Rect,
 ) -> BodyResponse<RenderNavAction> {
+    let scroll_to_top = {
+        let global_scroll = app
+            .decks_cache
+            .selected_column_index(ctx.accounts)
+            .is_some_and(|ind| ind == col)
+            && app.options.contains(AppOptions::ScrollToTop);
+
+        let col_scroll = app
+            .columns_mut(ctx.i18n, ctx.accounts)
+            .column_mut(col)
+            .take_scroll_to_top();
+
+        global_scroll || col_scroll
+    };
+
     let mut note_context = NoteContext {
         ndb: ctx.ndb,
         accounts: ctx.accounts,
@@ -615,15 +635,9 @@ fn render_nav_body(
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
     };
+
     match top {
         Route::Timeline(kind) => {
-            // did something request scroll to top for the selection column?
-            let scroll_to_top = app
-                .decks_cache
-                .selected_column_index(ctx.accounts)
-                .is_some_and(|ind| ind == col)
-                && app.options.contains(AppOptions::ScrollToTop);
-
             let resp = render_timeline_route(
                 &mut app.timeline_cache,
                 kind,
@@ -638,22 +652,23 @@ fn render_nav_body(
 
             app.timeline_cache.set_fresh(kind);
 
-            // always clear the scroll_to_top request
-            if scroll_to_top {
+            if app.options.contains(AppOptions::ScrollToTop) {
                 app.options.remove(AppOptions::ScrollToTop);
             }
 
             resp
         }
-        Route::Thread(selection) => render_thread_route(
-            &mut app.threads,
-            selection,
-            col,
-            app.note_options,
-            ui,
-            &mut note_context,
-            &mut app.jobs,
-        ),
+        Route::Thread(selection) => {
+            render_thread_route(
+                &mut app.threads,
+                selection,
+                col,
+                app.note_options,
+                ui,
+                &mut note_context,
+                &mut app.jobs,
+            )
+        }
         Route::Accounts(amr) => {
             let resp = render_accounts_route(
                 ui,
@@ -990,6 +1005,35 @@ fn render_nav_body(
                 })
         }
         Route::FollowedBy(_pubkey) => {
+            BodyResponse::none()
+        }
+        Route::Messages => {
+            let action = None;
+            let scroll_resp = ScrollArea::vertical()
+                .show(ui, |ui| {
+                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache).ui(ui)
+                });
+
+            if let Some(crate::ui::messages::MessageAction::OpenConversation(chat_id)) = scroll_resp.inner {
+                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(Route::Chat(chat_id));
+            }
+
+            let scroll_with_action = ScrollAreaOutput {
+                inner: action,
+                id: scroll_resp.id,
+                state: scroll_resp.state,
+                content_size: scroll_resp.content_size,
+                inner_rect: scroll_resp.inner_rect,
+            };
+
+            BodyResponse::scroll(scroll_with_action)
+        }
+        Route::Chat(chat_id) => {
+            crate::ui::ChatView::new(note_context.i18n, note_context.img_cache, chat_id.clone())
+                .ui(ui);
             BodyResponse::none()
         }
         Route::Wallet(wallet_type) => {

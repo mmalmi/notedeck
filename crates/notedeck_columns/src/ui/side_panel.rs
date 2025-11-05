@@ -43,6 +43,7 @@ impl View for DesktopSidePanel<'_> {
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum SidePanelAction {
     Home,
+    Messages,
     Columns,
     ComposeNote,
     Search,
@@ -128,6 +129,7 @@ impl<'a> DesktopSidePanel<'a> {
                 .show(ui, |ui| {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let home_resp = ui.add(home_button(self.current_route));
+                        let messages_resp = ui.add(messages_button(self.current_route));
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
@@ -161,11 +163,11 @@ impl<'a> DesktopSidePanel<'a> {
 
                         let decks_inner = show_decks(ui, self.decks_cache, self.selected_account);
 
-                        (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
+                        (home_resp, messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner)
                     })
                 });
 
-            let (home_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (home_resp, messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -235,6 +237,8 @@ impl<'a> DesktopSidePanel<'a> {
                 Some(SidePanelResponse::new(SidePanelAction::Relays, connectivity_resp))
             } else if home_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Home, home_resp))
+            } else if messages_resp.clicked() {
+                Some(SidePanelResponse::new(SidePanelAction::Messages, messages_resp))
             } else if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
             } else if pfp_resp.clicked() {
@@ -298,6 +302,13 @@ impl<'a> DesktopSidePanel<'a> {
                     // TODO: implement scroll to top when already on home route
                 } else {
                     router.route_to(home_route);
+                }
+            }
+            SidePanelAction::Messages => {
+                if router.top() == &Route::Messages {
+                    router.go_back();
+                } else {
+                    router.route_to(Route::Messages);
                 }
             }
             SidePanelAction::Columns => {
@@ -744,17 +755,16 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
     let connected_count = pool.relays.iter().filter(|r| matches!(r.status(), RelayStatus::Connected)).count();
     let total_count = pool.relays.len();
 
-    // Determine color based on connection status
     let indicator_color = if total_count > 1 {
         if connected_count == 0 {
-            egui::Color32::from_rgb(0xFF, 0x66, 0x66) // red
+            egui::Color32::from_rgb(0xFF, 0x66, 0x66)
         } else if connected_count == 1 {
-            egui::Color32::from_rgb(0xFF, 0xCC, 0x66) // yellow
+            egui::Color32::from_rgb(0xFF, 0xCC, 0x66)
         } else {
-            colors::MID_GRAY // normal muted gray
+            colors::MID_GRAY
         }
     } else {
-        colors::MID_GRAY // single relay, no color coding
+        colors::MID_GRAY
     };
 
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
@@ -764,15 +774,12 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
     let rect = helper.get_animation_rect();
     let center = rect.center();
 
-    // Draw network icon (three signal bars)
     let bar_width = 2.0;
     let bar_spacing = 3.0;
 
-    // Calculate base position for bars
     let base_y = center.y + 4.0;
     let start_x = center.x - (bar_width + bar_spacing);
 
-    // Draw three bars of increasing height
     let bar_heights = [4.0, 7.0, 10.0];
     for (i, &height) in bar_heights.iter().enumerate() {
         let x = start_x + (i as f32) * (bar_width + bar_spacing);
@@ -783,7 +790,6 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
         painter.rect_filled(bar_rect, 0.0, indicator_color);
     }
 
-    // Draw count text
     let count_text = format!("{}", connected_count);
     let font_id = egui::FontId::proportional(10.0);
 
@@ -798,4 +804,49 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
     helper.take_animation_response()
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(format!("{}/{} relays connected", connected_count, total_count))
+}
+
+fn messages_button(current_route: Option<&Route>) -> impl Widget + '_ {
+    let is_active = matches!(current_route, Some(Route::Messages));
+    move |ui: &mut egui::Ui| {
+        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
+        let helper = AnimationHelper::new(ui, "messages-button", vec2(max_size, max_size));
+
+        let painter = ui.painter_at(helper.get_animation_rect());
+        if is_active {
+            let circle_radius = max_size / 2.0;
+            painter.circle(
+                helper.get_animation_rect().center(),
+                circle_radius,
+                ui.visuals().widgets.active.weak_bg_fill,
+                Stroke::NONE,
+            );
+        }
+
+        let icon_color = if is_active { ui.visuals().strong_text_color() } else { colors::MID_GRAY };
+        let line_width = helper.scale_1d_pos(1.5);
+
+        let envelope_width = helper.scale_1d_pos(20.0);
+        let envelope_height = helper.scale_1d_pos(14.0);
+        let center = helper.get_animation_rect().center();
+
+        let top_left = center + vec2(-envelope_width / 2.0, -envelope_height / 2.0);
+        let top_right = center + vec2(envelope_width / 2.0, -envelope_height / 2.0);
+        let bottom_left = center + vec2(-envelope_width / 2.0, envelope_height / 2.0);
+        let bottom_right = center + vec2(envelope_width / 2.0, envelope_height / 2.0);
+
+        let stroke = Stroke::new(line_width, icon_color);
+
+        painter.line_segment([top_left, top_right], stroke);
+        painter.line_segment([top_right, bottom_right], stroke);
+        painter.line_segment([bottom_right, bottom_left], stroke);
+        painter.line_segment([bottom_left, top_left], stroke);
+
+        painter.line_segment([top_left, center + vec2(0.0, 2.0)], stroke);
+        painter.line_segment([top_right, center + vec2(0.0, 2.0)], stroke);
+
+        helper.take_animation_response()
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Messages")
+    }
 }

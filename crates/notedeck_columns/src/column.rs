@@ -13,6 +13,7 @@ use tracing::warn;
 pub struct Column {
     pub router: Router<Route>,
     pub sheet_router: SingletonRouter<Route>,
+    scroll_to_top: bool,
 }
 
 impl Column {
@@ -21,6 +22,7 @@ impl Column {
         Column {
             router,
             sheet_router: SingletonRouter::default(),
+            scroll_to_top: false,
         }
     }
 
@@ -30,6 +32,14 @@ impl Column {
 
     pub fn router_mut(&mut self) -> &mut Router<Route> {
         &mut self.router
+    }
+
+    pub fn request_scroll_to_top(&mut self) {
+        self.scroll_to_top = true;
+    }
+
+    pub fn take_scroll_to_top(&mut self) -> bool {
+        std::mem::take(&mut self.scroll_to_top)
     }
 }
 

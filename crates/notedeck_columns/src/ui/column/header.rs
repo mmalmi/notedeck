@@ -71,11 +71,18 @@ impl<'a> NavTitle<'a> {
                 child_ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
 
+            let click_rect = child_ui.interact(rect, child_ui.id().with("click"), Sense::click());
+            let clicked = click_rect.clicked() && !interact_rect.dragged();
+
             let r = self.title_bar(&mut child_ui);
 
             ui.advance_cursor_after_rect(rect);
 
-            r
+            if clicked {
+                Some(RenderNavAction::ScrollToTop)
+            } else {
+                r
+            }
         })
         .inner
     }
@@ -499,6 +506,8 @@ impl<'a> NavTitle<'a> {
             Route::RepostDecision(_) => None,
             Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
+            Route::Messages => None,
+            Route::Chat(_) => None,
         }
     }
 
