@@ -1,5 +1,16 @@
-use crate::Session;
+use crate::{Session, SessionState};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[derive(Serialize, Deserialize)]
+pub struct StoredDeviceRecord {
+    pub device_id: String,
+    pub active_session: Option<SessionState>,
+    pub inactive_sessions: Vec<SessionState>,
+    pub is_stale: bool,
+    pub stale_timestamp: Option<u64>,
+    pub last_activity: Option<u64>,
+}
 
 pub struct DeviceRecord {
     pub device_id: String,
@@ -13,7 +24,7 @@ pub struct DeviceRecord {
 
 pub struct UserRecord {
     pub user_id: String,
-    device_records: HashMap<String, DeviceRecord>,
+    pub device_records: HashMap<String, DeviceRecord>,
     is_stale: bool,
     stale_timestamp: Option<u64>,
 }
@@ -57,16 +68,16 @@ impl UserRecord {
             .as_secs());
     }
 
-    pub fn get_active_sessions(&self) -> Vec<&Session> {
+    pub fn get_active_sessions_mut(&mut self) -> Vec<&mut Session> {
         if self.is_stale {
             return Vec::new();
         }
 
-        let mut sessions: Vec<&Session> = self
+        let mut sessions: Vec<&mut Session> = self
             .device_records
-            .values()
+            .values_mut()
             .filter(|d| !d.is_stale)
-            .filter_map(|d| d.active_session.as_ref())
+            .filter_map(|d| d.active_session.as_mut())
             .collect();
 
         sessions.sort_by(|a, b| {
@@ -96,4 +107,32 @@ impl UserRecord {
         }
         self.device_records.clear();
     }
+
+    pub fn to_stored(&self) -> StoredUserRecord {
+        StoredUserRecord {
+            user_id: self.user_id.clone(),
+            devices: self
+                .device_records
+                .values()
+                .map(|d| StoredDeviceRecord {
+                    device_id: d.device_id.clone(),
+                    active_session: d.active_session.as_ref().map(|s| s.state.clone()),
+                    inactive_sessions: d
+                        .inactive_sessions
+                        .iter()
+                        .map(|s| s.state.clone())
+                        .collect(),
+                    is_stale: d.is_stale,
+                    stale_timestamp: d.stale_timestamp,
+                    last_activity: d.last_activity,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StoredUserRecord {
+    pub user_id: String,
+    pub devices: Vec<StoredDeviceRecord>,
 }
