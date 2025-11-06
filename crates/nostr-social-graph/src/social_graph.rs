@@ -5,7 +5,7 @@ use crate::error::SocialGraphError;
 use log::debug;
 
 pub struct SocialGraph {
-    root: UID,
+    root: RwLock<UID>,
     follow_distance_by_user: RwLock<HashMap<UID, u32>>,
     followed_by_user: RwLock<HashMap<UID, HashSet<UID>>>,
     followers_by_user: RwLock<HashMap<UID, HashSet<UID>>>,
@@ -31,7 +31,7 @@ impl SocialGraph {
         users_by_distance.insert(0, root_set);
 
         Ok(Self {
-            root: root_id,
+            root: RwLock::new(root_id),
             follow_distance_by_user: RwLock::new(follow_distance),
             followed_by_user: RwLock::new(HashMap::new()),
             followers_by_user: RwLock::new(HashMap::new()),
@@ -45,25 +45,27 @@ impl SocialGraph {
     }
 
     pub fn get_root(&self) -> Result<String, SocialGraphError> {
-        self.ids.str(self.root)
+        let root = *self.root.read().unwrap();
+        self.ids.str(root)
     }
 
-    pub fn set_root(&mut self, root: &str) -> Result<(), SocialGraphError> {
+    pub fn set_root(&self, root: &str) -> Result<(), SocialGraphError> {
         let root_id = self.ids.get_or_create_id(root)?;
-        self.root = root_id;
+        *self.root.write().unwrap() = root_id;
         self.recalculate_follow_distances()?;
         Ok(())
     }
 
     pub fn recalculate_follow_distances(&self) -> Result<(), SocialGraphError> {
+        let root = *self.root.read().unwrap();
         let mut distances: HashMap<UID, u32> = HashMap::new();
         let mut users_by_distance: HashMap<u32, HashSet<UID>> = HashMap::new();
 
-        distances.insert(self.root, 0);
-        users_by_distance.entry(0).or_default().insert(self.root);
+        distances.insert(root, 0);
+        users_by_distance.entry(0).or_default().insert(root);
 
         let mut queue = VecDeque::new();
-        queue.push_back(self.root);
+        queue.push_back(root);
 
         let followed = self.followed_by_user.read().unwrap();
         while let Some(user) = queue.pop_front() {
@@ -273,8 +275,9 @@ impl SocialGraph {
         let followers = self.followers_by_user.read().unwrap();
         let followed = self.followed_by_user.read().unwrap();
 
+        let root = *self.root.read().unwrap();
         let count = if let Some(follower_set) = followers.get(&id) {
-            if let Some(root_follows) = followed.get(&self.root) {
+            if let Some(root_follows) = followed.get(&root) {
                 follower_set.iter()
                     .filter(|&follower| root_follows.contains(follower))
                     .count()
@@ -294,12 +297,13 @@ impl SocialGraph {
             None => return Ok(HashSet::new()),
         };
 
+        let root = *self.root.read().unwrap();
         let mut set = HashSet::new();
         let followers = self.followers_by_user.read().unwrap();
         let followed = self.followed_by_user.read().unwrap();
 
         if let Some(follower_set) = followers.get(&id) {
-            if let Some(root_follows) = followed.get(&self.root) {
+            if let Some(root_follows) = followed.get(&root) {
                 for &follower in follower_set {
                     if root_follows.contains(&follower) {
                         if let Ok(str_id) = self.ids.str(follower) {
@@ -392,11 +396,12 @@ impl SocialGraph {
             None => return Ok(0),
         };
 
+        let root = *self.root.read().unwrap();
         let user_muted = self.user_muted_by.read().unwrap();
         let followed = self.followed_by_user.read().unwrap();
 
         let count = if let Some(muter_set) = user_muted.get(&id) {
-            if let Some(root_follows) = followed.get(&self.root) {
+            if let Some(root_follows) = followed.get(&root) {
                 muter_set.iter()
                     .filter(|&muter| root_follows.contains(muter))
                     .count()
@@ -441,54 +446,107 @@ impl SocialGraph {
         (distances.len(), follows, mutes)
     }
 
-    pub fn populate_from_ndb(&self, ndb: &nostrdb::Ndb) -> Result<(), SocialGraphError> {
-        let txn = nostrdb::Transaction::new(ndb)
-            .map_err(|e| SocialGraphError::Serialization(e.to_string()))?;
+    pub fn populate_from_ndb(&self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) -> Result<(), SocialGraphError> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
 
-        let contact_filter = nostrdb::Filter::new()
-            .kinds(vec![3])
-            .build();
+        let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), SocialGraphError> {
 
-        let mute_filter = nostrdb::Filter::new()
-            .kinds(vec![10000])
-            .build();
+            let contact_filter = nostrdb::Filter::new()
+                .kinds(vec![3])
+                .build();
 
-        let filters = vec![contact_filter, mute_filter];
-        let results = ndb.query(&txn, &filters, 100000)
-            .map_err(|e| SocialGraphError::Serialization(e.to_string()))?;
+            let mute_filter = nostrdb::Filter::new()
+                .kinds(vec![10000])
+                .build();
 
-        debug!("Populating social graph from {} events", results.len());
+            let filters = vec![contact_filter, mute_filter];
+            let results = ndb.query(txn, &filters, 100000)
+                .map_err(|e| SocialGraphError::Serialization(e.to_string()))?;
 
-        for result in results {
-            if let Ok(note) = ndb.get_note_by_key(&txn, result.note_key) {
-                let pubkey = hex::encode(note.pubkey());
-                let created_at = note.created_at();
-                let kind = note.kind();
+            debug!("Populating social graph from {} events", results.len());
 
-                let mut tags = Vec::new();
-                for tag in note.tags() {
-                    let tag_str = tag.get(0).and_then(|v| v.variant().str()).unwrap_or("");
-                    if tag_str == "p" {
-                        if let Some(pubkey_val) = tag.get(1).and_then(|v| v.variant().str()) {
-                            tags.push(("p".to_string(), vec![pubkey_val.to_string()]));
+            let root_hex = {
+                let root_id = *self.root.read().unwrap();
+                self.ids.str(root_id).ok()
+            };
+
+            // Process root's contact list first
+            if let Some(root_pk) = &root_hex {
+                for result in &results {
+                    if let Ok(note) = ndb.get_note_by_key(txn, result.note_key) {
+                        let pubkey = hex::encode(note.pubkey());
+                        if &pubkey == root_pk && note.kind() == 3 {
+                            let mut tags = Vec::new();
+                            for tag in note.tags().iter() {
+                                if tag.count() < 2 {
+                                    continue;
+                                }
+                                if let Some("p") = tag.get_str(0) {
+                                    if let Some(pk_bytes) = tag.get_id(1) {
+                                        let pk_hex = hex::encode(pk_bytes);
+                                        tags.push(("p".to_string(), vec![pk_hex]));
+                                    }
+                                }
+                            }
+                            debug!("Processing root contact list with {} p tags", tags.len());
+                            if let Err(e) = self.handle_contact_list(&pubkey, &tags, note.created_at()) {
+                                debug!("Error processing root contact list: {:?}", e);
+                            }
+                            break;
                         }
                     }
                 }
+            }
 
-                if kind == 3 {
-                    if let Err(e) = self.handle_contact_list(&pubkey, &tags, created_at) {
-                        debug!("Error processing contact list for {}: {:?}", pubkey, e);
+            // Process all other events
+            for result in results {
+                if let Ok(note) = ndb.get_note_by_key(txn, result.note_key) {
+                    let pubkey = hex::encode(note.pubkey());
+                    let created_at = note.created_at();
+                    let kind = note.kind();
+
+                    // Skip root's contact list (already processed)
+                    if let Some(root_pk) = &root_hex {
+                        if &pubkey == root_pk && kind == 3 {
+                            continue;
+                        }
                     }
-                } else if kind == 10000 {
-                    if let Err(e) = self.handle_mute_list(&pubkey, &tags, created_at) {
-                        debug!("Error processing mute list for {}: {:?}", pubkey, e);
+
+                    let mut tags = Vec::new();
+                    for tag in note.tags().iter() {
+                        if tag.count() >= 2 {
+                            if let Some("p") = tag.get_str(0) {
+                                if let Some(pk_bytes) = tag.get_id(1) {
+                                    let pk_hex = hex::encode(pk_bytes);
+                                    tags.push(("p".to_string(), vec![pk_hex]));
+                                }
+                            }
+                        }
+                    }
+
+                    if kind == 3 {
+                        if let Err(e) = self.handle_contact_list(&pubkey, &tags, created_at) {
+                            debug!("Error processing contact list for {}: {:?}", &pubkey[..8], e);
+                        }
+                    } else if kind == 10000 {
+                        if let Err(e) = self.handle_mute_list(&pubkey, &tags, created_at) {
+                            debug!("Error processing mute list for {}: {:?}", &pubkey[..8], e);
+                        }
                     }
                 }
             }
-        }
 
-        let (users, follows, mutes) = self.size();
-        debug!("Social graph populated: {} users, {} follows, {} mutes", users, follows, mutes);
-        Ok(())
+            let (users, follows, mutes) = self.size();
+            debug!("Social graph populated: {} users, {} follows, {} mutes", users, follows, mutes);
+            Ok(())
+        }));
+
+        match result {
+            Ok(r) => r,
+            Err(_) => {
+                debug!("Panic during social graph population");
+                Err(SocialGraphError::Serialization("Panic during population".to_string()))
+            }
+        }
     }
 }

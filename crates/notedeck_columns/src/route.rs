@@ -45,6 +45,7 @@ pub enum SettingsRoute {
     Storage,
     Keys,
     Others,
+    SocialGraph,
 }
 
 impl Route {
@@ -139,6 +140,7 @@ impl Route {
                     SettingsRoute::Storage => writer.write_token("storage"),
                     SettingsRoute::Keys => writer.write_token("keys"),
                     SettingsRoute::Others => writer.write_token("others"),
+                    SettingsRoute::SocialGraph => writer.write_token("social-graph"),
                 }
             }
             Route::ComposeNote => {
@@ -242,6 +244,10 @@ impl Route {
                                 "others" => {
                                     p.pull_token()?;
                                     SettingsRoute::Others
+                                }
+                                "social-graph" => {
+                                    p.pull_token()?;
+                                    SettingsRoute::SocialGraph
                                 }
                                 _ => SettingsRoute::Menu,
                             }
@@ -386,6 +392,9 @@ impl Route {
                 }
                 SettingsRoute::Others => {
                     ColumnTitle::formatted(tr!(i18n, "Others", "Column title for other settings"))
+                }
+                SettingsRoute::SocialGraph => {
+                    ColumnTitle::simple("Social Graph")
                 }
             }
             Route::Accounts(amr) => match amr {

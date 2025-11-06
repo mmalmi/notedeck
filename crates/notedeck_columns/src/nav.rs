@@ -105,6 +105,9 @@ impl SwitchingAction {
                             ctx.pool,
                             ui_ctx,
                         );
+                        if let Some(graph) = ctx.social_graph {
+                            ctx.accounts.update_social_graph_root(graph);
+                        }
 
                         let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
                         // this is cringe but we're gonna get a new sub manager soon...
@@ -635,6 +638,7 @@ fn render_nav_body(
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
         session_manager: ctx.session_manager,
+        social_graph: ctx.social_graph.as_ref(),
     };
 
     match top {

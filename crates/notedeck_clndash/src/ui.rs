@@ -55,6 +55,7 @@ pub fn note_hover_ui(
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
+            social_graph: ctx.social_graph.as_ref(),
         };
 
         let mut jobs = notedeck::JobsCache::default();

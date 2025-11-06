@@ -795,6 +795,7 @@ fn render_composite_entry(
                                     note_context.img_cache,
                                     note_options.contains(NoteOptions::Notification),
                                     note_context.accounts,
+                                    note_context.social_graph,
                                 )
                             },
                         )
@@ -889,6 +890,7 @@ fn render_profiles(
     img_cache: &mut notedeck::Images,
     notification: bool,
     accounts: &notedeck::Accounts,
+    social_graph: Option<&std::sync::Arc<nostr_social_graph::SocialGraph>>,
 ) -> PfpsResponse {
     let mut action = None;
     if notification {
@@ -937,7 +939,7 @@ fn render_profiles(
                         ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
                             .sense(Sense::click())
-                            .with_follow_check(entry.pk, accounts);
+                            .with_follow_check(entry.pk, accounts, social_graph);
                     let mut resp = ui.put(rect, &mut widget);
                     rendered = true;
 

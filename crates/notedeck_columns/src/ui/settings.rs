@@ -701,6 +701,7 @@ impl<'a> SettingsView<'a> {
                     ("Content", SettingsRoute::Others, Some(SettingsIcon::Emoji("📄"))),
                     ("Storage", SettingsRoute::Storage, Some(SettingsIcon::Emoji("💾"))),
                     ("Keys", SettingsRoute::Keys, Some(SettingsIcon::Image(key_image()))),
+                    ("Social Graph", SettingsRoute::SocialGraph, Some(SettingsIcon::Emoji("🕸️"))),
                 ]);
             });
 
@@ -902,6 +903,59 @@ impl<'a> SettingsView<'a> {
             });
     }
 
+    pub fn social_graph_section(&mut self, ui: &mut egui::Ui) {
+        if let Some(graph) = self.note_context.social_graph {
+            let (users, follows, mutes) = graph.size();
+
+            ui.add_space(16.0);
+            ui.heading("Social Graph Statistics");
+            ui.add_space(12.0);
+
+            egui::Grid::new("social_graph_stats")
+                .num_columns(2)
+                .spacing([40.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Total users:");
+                    ui.label(users.to_string());
+                    ui.end_row();
+
+                    ui.label("Follow relationships:");
+                    ui.label(follows.to_string());
+                    ui.end_row();
+
+                    ui.label("Mute relationships:");
+                    ui.label(mutes.to_string());
+                    ui.end_row();
+                });
+
+            ui.add_space(20.0);
+            ui.heading("Web of Trust Badges");
+            ui.add_space(8.0);
+            ui.label("Profile pictures show colored checkmarks based on follow distance:");
+            ui.add_space(12.0);
+
+            egui::Grid::new("badge_legend")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(139, 92, 246), "● Purple");
+                    ui.label("You or users you follow");
+                    ui.end_row();
+
+                    ui.colored_label(egui::Color32::from_rgb(251, 146, 60), "● Orange");
+                    ui.label("Followed by 10+ of your follows");
+                    ui.end_row();
+
+                    ui.colored_label(egui::Color32::from_rgb(156, 163, 175), "● Gray");
+                    ui.label("Other 2nd degree contacts");
+                    ui.end_row();
+                });
+        } else {
+            ui.add_space(16.0);
+            ui.label("Social graph not initialized");
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, route: &SettingsRoute) -> BodyResponse<SettingsAction> {
         match route {
             SettingsRoute::Menu => {
@@ -932,6 +986,9 @@ impl<'a> SettingsView<'a> {
                                     if let Some(new_action) = self.other_options_section(ui) {
                                         action = Some(new_action);
                                     }
+                                }
+                                SettingsRoute::SocialGraph => {
+                                    self.social_graph_section(ui);
                                 }
                                 SettingsRoute::Menu => {}
                             }

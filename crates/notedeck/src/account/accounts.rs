@@ -235,7 +235,7 @@ impl Accounts {
     }
 
     /// Have already selected in `AccountCache`, updating other things
-    fn select_account_internal(
+    pub fn select_account_internal(
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
@@ -258,6 +258,16 @@ impl Accounts {
             &self.cache.selected().data,
             create_wakeup(ctx),
         );
+    }
+
+    pub fn update_social_graph_root(&self, social_graph: &std::sync::Arc<nostr_social_graph::SocialGraph>) {
+        let selected = self.get_selected_account();
+        let root_pubkey = hex::encode(selected.key.pubkey.bytes());
+        if let Err(e) = social_graph.set_root(&root_pubkey) {
+            tracing::error!("Failed to update social graph root: {}", e);
+        } else {
+            tracing::info!("Social graph root updated to {}", root_pubkey);
+        }
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {

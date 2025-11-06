@@ -337,7 +337,7 @@ impl Notedeck {
         let (session_event_tx, session_event_rx) = crossbeam_channel::unbounded();
         let session_manager = Self::init_session_manager(&path, &accounts, session_event_tx.clone());
 
-        let social_graph = Self::init_social_graph(&accounts, &ndb);
+        let social_graph = Self::init_social_graph(&accounts, &ndb, &txn);
 
         Self {
             ndb,
@@ -406,23 +406,35 @@ impl Notedeck {
         Some(Arc::new(manager))
     }
 
-    fn init_social_graph(accounts: &Accounts, ndb: &Ndb) -> Option<Arc<SocialGraph>> {
-        let selected_account = accounts.get_selected_account();
-        let root_pubkey = hex::encode(selected_account.key.pubkey.bytes());
+    fn init_social_graph(accounts: &Accounts, ndb: &Ndb, txn: &Transaction) -> Option<Arc<SocialGraph>> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
 
-        match SocialGraph::new(&root_pubkey) {
-            Ok(graph) => {
-                info!("Initializing social graph for {}", root_pubkey);
-                if let Err(e) = graph.populate_from_ndb(ndb) {
-                    error!("Failed to populate social graph: {}", e);
-                } else {
-                    let (users, follows, mutes) = graph.size();
-                    info!("Social graph initialized: {} users, {} follows, {} mutes", users, follows, mutes);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let selected_account = accounts.get_selected_account();
+            let root_pubkey = hex::encode(selected_account.key.pubkey.bytes());
+
+            match SocialGraph::new(&root_pubkey) {
+                Ok(graph) => {
+                    info!("Initializing social graph for {}", root_pubkey);
+                    if let Err(e) = graph.populate_from_ndb(ndb, &txn) {
+                        error!("Failed to populate social graph: {}", e);
+                    } else {
+                        let (users, follows, mutes) = graph.size();
+                        info!("Social graph initialized: {} users, {} follows, {} mutes", users, follows, mutes);
+                    }
+                    Some(Arc::new(graph))
                 }
-                Some(Arc::new(graph))
+                Err(e) => {
+                    error!("Failed to create social graph: {}", e);
+                    None
+                }
             }
-            Err(e) => {
-                error!("Failed to create social graph: {}", e);
+        }));
+
+        match result {
+            Ok(graph) => graph,
+            Err(_) => {
+                error!("Social graph initialization panicked, disabling WoT features");
                 None
             }
         }

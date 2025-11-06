@@ -15,6 +15,7 @@ pub struct UserRow<'a> {
     pubkey: &'a Pubkey,
     cache: &'a mut Images,
     accounts: Option<&'a Accounts>,
+    social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>,
     width: f32,
     is_selected: bool,
 }
@@ -31,6 +32,7 @@ impl<'a> UserRow<'a> {
             pubkey,
             cache,
             accounts: None,
+            social_graph: None,
             width,
             is_selected: false,
         }
@@ -38,6 +40,11 @@ impl<'a> UserRow<'a> {
 
     pub fn with_accounts(mut self, accounts: &'a Accounts) -> Self {
         self.accounts = Some(accounts);
+        self
+    }
+
+    pub fn with_social_graph(mut self, social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>) -> Self {
+        self.social_graph = social_graph;
         self
     }
 
@@ -85,7 +92,7 @@ impl<'a> Widget for UserRow<'a> {
             .size(pic_size);
 
         if let Some(accounts) = self.accounts {
-            profile_pic = profile_pic.with_follow_check(self.pubkey, accounts);
+            profile_pic = profile_pic.with_follow_check(self.pubkey, accounts, self.social_graph);
         }
 
         ui.put(pfp_rect, &mut profile_pic);

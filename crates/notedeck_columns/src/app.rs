@@ -749,6 +749,9 @@ fn render_damus_mobile(
                                     app_ctx.pool,
                                     ui.ctx(),
                                 );
+                                if let Some(graph) = app_ctx.social_graph {
+                                    app_ctx.accounts.update_social_graph_root(graph);
+                                }
                             }
                         }
                     }
@@ -1028,6 +1031,9 @@ fn timelines_view(
                         ctx.pool,
                         ui.ctx(),
                     );
+                    if let Some(graph) = ctx.social_graph {
+                        ctx.accounts.update_social_graph_root(graph);
+                    }
                 }
             }
         }

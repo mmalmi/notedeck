@@ -224,6 +224,7 @@ impl<'a> DaveUi<'a> {
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
+            social_graph: ctx.social_graph.as_ref(),
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();
