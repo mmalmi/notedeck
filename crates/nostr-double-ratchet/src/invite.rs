@@ -317,17 +317,23 @@ impl Invite {
         let conversation_key = nip44::v2::ConversationKey::new(self.shared_secret);
         let ciphertext_bytes = base64::engine::general_purpose::STANDARD.decode(inner_content)
             .map_err(|e| Error::Serialization(e.to_string()))?;
-        let dh_encrypted = String::from_utf8(nip44::v2::decrypt_to_bytes(&conversation_key, &ciphertext_bytes)?)
+        let dh_encrypted_ciphertext = String::from_utf8(nip44::v2::decrypt_to_bytes(&conversation_key, &ciphertext_bytes)?)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
-        let payload: serde_json::Value = match serde_json::from_str(&dh_encrypted) {
+        // Decrypt the DH-encrypted layer using inviter's key
+        let inviter_sk = nostr::SecretKey::from_slice(&_inviter_private_key)?;
+        let invitee_pk = nostr::PublicKey::from_slice(invitee_identity.bytes())?;
+        let dh_decrypted = nip44::decrypt(&inviter_sk, &invitee_pk, &dh_encrypted_ciphertext)?;
+
+        let payload: serde_json::Value = match serde_json::from_str(&dh_decrypted) {
             Ok(p) => p,
             Err(_) => {
-                let invitee_session_pubkey = crate::utils::pubkey_from_hex(&dh_encrypted)?;
+                // Fallback: treat as raw hex session key
+                let invitee_session_pubkey = crate::utils::pubkey_from_hex(&dh_decrypted)?;
                 let session = Session::init(
                     invitee_session_pubkey,
                     inviter_ephemeral_private_key,
-                    false,
+                    false, // Inviter is non-initiator, must receive first message to initialize ratchet
                     self.shared_secret,
                     event.id.map(|id| id.to_string()),
                 )?;
@@ -343,7 +349,7 @@ impl Invite {
         let session = Session::init(
             invitee_session_pubkey,
             inviter_ephemeral_private_key,
-            false,
+            false, // Inviter is non-initiator, must receive first message to initialize ratchet
             self.shared_secret,
             event.id.map(|id| id.to_string()),
         )?;

@@ -10,6 +10,11 @@ pub enum SessionManagerEvent {
     Subscribe(String),
     Publish(UnsignedEvent),
     ReceivedEvent(UnsignedEvent),
+    DecryptedMessage {
+        sender: Pubkey,
+        content: String,
+        event_id: Option<String>,
+    },
 }
 
 struct InviteState {
@@ -94,33 +99,56 @@ impl SessionManager {
     }
 
     pub fn send_text(&self, recipient: Pubkey, text: String) -> Result<Vec<String>> {
-        let mut user_records = self.user_records.lock().unwrap();
-        let user_record = user_records
-            .entry(recipient)
-            .or_insert_with(|| UserRecord::new(hex::encode(recipient.bytes())));
-
-        let active_sessions = user_record.get_active_sessions_mut();
-
-        if active_sessions.is_empty() {
-            return Ok(vec![]);
+        // Setup recipient if not already done (triggers invite subscription)
+        if recipient != self.our_public_key {
+            let _ = self.setup_user(recipient);
         }
 
-        let mut event_ids = Vec::new();
+        // Also send to self (all own devices)
+        let _ = self.setup_user(self.our_public_key);
 
-        for session in active_sessions {
-            match session.send(text.clone()) {
-                Ok(unsigned_event) => {
-                    if let Some(id) = unsigned_event.id {
-                        event_ids.push(id.to_string());
+        let mut event_ids = Vec::new();
+        let mut user_records = self.user_records.lock().unwrap();
+
+        // Send to recipient's devices
+        if let Some(recipient_record) = user_records.get_mut(&recipient) {
+            let mut active_sessions = recipient_record.get_active_sessions_mut();
+            for session in active_sessions.iter_mut() {
+                match session.send(text.clone()) {
+                    Ok(unsigned_event) => {
+                        if let Some(id) = unsigned_event.id {
+                            event_ids.push(id.to_string());
+                        }
+                        let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
                     }
-                    let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
+                    Err(_) => continue,
                 }
-                Err(_) => continue,
+            }
+        }
+
+        // Send to own devices (unless sending to self)
+        if recipient != self.our_public_key {
+            if let Some(self_record) = user_records.get_mut(&self.our_public_key) {
+                let active_sessions = self_record.get_active_sessions_mut();
+                for session in active_sessions {
+                    match session.send(text.clone()) {
+                        Ok(unsigned_event) => {
+                            if let Some(id) = unsigned_event.id {
+                                event_ids.push(id.to_string());
+                            }
+                            let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
+                        }
+                        Err(_) => continue,
+                    }
+                }
             }
         }
 
         drop(user_records);
         let _ = self.store_user_record(&recipient);
+        if recipient != self.our_public_key {
+            let _ = self.store_user_record(&self.our_public_key);
+        }
 
         Ok(event_ids)
     }
@@ -136,6 +164,19 @@ impl SessionManager {
             .keys()
             .copied()
             .collect()
+    }
+
+    pub fn get_total_sessions(&self) -> usize {
+        self.user_records
+            .lock()
+            .unwrap()
+            .values()
+            .map(|ur| ur.device_records.values().filter(|dr| dr.active_session.is_some()).count())
+            .sum()
+    }
+
+    pub fn get_our_pubkey(&self) -> Pubkey {
+        self.our_public_key
     }
 
     fn device_invite_key(&self, device_id: &str) -> String {
@@ -184,23 +225,21 @@ impl SessionManager {
     pub fn process_received_event(&self, event: UnsignedEvent) {
         if event.kind.as_u16() == crate::INVITE_RESPONSE_KIND as u16 {
             if let Some(state) = self.invite_state.lock().unwrap().as_ref() {
-                if let Ok(session) = state.invite.process_invite_response(&event, state.our_identity_key) {
-                    if let Some((sess, invitee_pubkey, device_id)) = session {
-                        if let Some(ref dev_id) = device_id {
-                            if dev_id != &self.device_id {
-                                let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
-                                if self.storage.get(&acceptance_key).ok().flatten().is_none() {
-                                    let _ = self.storage.put(&acceptance_key, "1".to_string());
+                if let Ok(Some((sess, invitee_pubkey, device_id))) = state.invite.process_invite_response(&event, state.our_identity_key) {
+                    if let Some(ref dev_id) = device_id {
+                        if dev_id != &self.device_id {
+                            let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
+                            if self.storage.get(&acceptance_key).ok().flatten().is_none() {
+                                let _ = self.storage.put(&acceptance_key, "1".to_string());
 
-                                    let mut records = self.user_records.lock().unwrap();
-                                    let user_record = records
-                                        .entry(invitee_pubkey)
-                                        .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
-                                    user_record.upsert_session(Some(dev_id), sess);
-                                    drop(records);
+                                let mut records = self.user_records.lock().unwrap();
+                                let user_record = records
+                                    .entry(invitee_pubkey)
+                                    .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
+                                user_record.upsert_session(Some(dev_id), sess);
+                                drop(records);
 
-                                    let _ = self.store_user_record(&invitee_pubkey);
-                                }
+                                let _ = self.store_user_record(&invitee_pubkey);
                             }
                         }
                     }
@@ -210,11 +249,14 @@ impl SessionManager {
             if let Ok(invite) = Invite::from_event(&event) {
                 if let Some(ref dev_id) = invite.device_id {
                     let inviter = invite.inviter;
+
+                    // Check if we already have a session with this user/device
                     let mut records = self.user_records.lock().unwrap();
                     let user_record = records
                         .entry(inviter)
                         .or_insert_with(|| UserRecord::new(hex::encode(inviter.bytes())));
 
+                    // Only accept if we don't already have a session for this device
                     if !user_record.device_records.contains_key(dev_id) {
                         drop(records);
 
@@ -236,6 +278,33 @@ impl SessionManager {
                     }
                 }
             }
+        } else if event.kind.as_u16() == crate::MESSAGE_EVENT_KIND as u16 {
+            // Handle encrypted message
+            // NOTE: event.pubkey is random (for privacy), so we must try all sessions
+            let event_id = event.id.map(|id| id.to_string());
+            let mut user_records = self.user_records.lock().unwrap();
+
+            // Try to decrypt with ALL sessions (active + inactive) from all users
+            for (user_pubkey, user_record) in user_records.iter_mut() {
+                let mut all_sessions = user_record.get_all_sessions_mut();
+
+                for session in all_sessions.iter_mut() {
+                    if let Ok(Some(plaintext)) = session.receive(&event) {
+                        // Message decrypted successfully - emit it
+                        let sender = *user_pubkey;
+                        drop(user_records);
+                        let _ = self.event_tx.send(SessionManagerEvent::DecryptedMessage {
+                            sender,
+                            content: plaintext,
+                            event_id,
+                        });
+                        let _ = self.store_user_record(&sender);
+                        return;
+                    }
+                }
+            }
+
+            drop(user_records);
         }
     }
 }

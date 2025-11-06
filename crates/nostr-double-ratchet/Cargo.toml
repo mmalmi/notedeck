@@ -26,3 +26,4 @@ crossbeam-channel = "0.5"
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

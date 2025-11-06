@@ -167,6 +167,11 @@ impl eframe::App for Notedeck {
                         SessionManagerEvent::ReceivedEvent(event) => {
                             manager.process_received_event(event);
                         }
+                        SessionManagerEvent::DecryptedMessage { sender, content, event_id } => {
+                            info!("Decrypted message from {}: {} (event_id: {:?})",
+                                hex::encode(sender.bytes()), content, event_id);
+                            // TODO: Store/display decrypted message in chat UI
+                        }
                     }
                 }
             }

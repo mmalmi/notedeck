@@ -364,7 +364,8 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                     if let Ok(note_id) = enostr::NoteId::from_hex(ev) {
                         if let Ok(note) = ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
                             let kind = note.kind();
-                            if kind == 30078 || kind == 443 {
+                            // Route invite (30078), invite response (1059), and encrypted messages (1060)
+                            if kind == 30078 || kind == 1059 || kind == 1060 {
                                 if let Ok(json) = note.json() {
                                     if let Ok(event) = nostr::Event::from_json(&json) {
                                         let unsigned = nostr::UnsignedEvent::from(event);

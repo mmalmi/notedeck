@@ -95,15 +95,18 @@ impl Session {
         })
     }
 
+    pub fn can_send(&self) -> bool {
+        self.state.their_next_nostr_public_key.is_some()
+            && self.state.our_current_nostr_key.is_some()
+    }
+
     pub fn send(&mut self, text: String) -> Result<UnsignedEvent> {
         let dummy_keys = Keys::generate();
         self.send_event(EventBuilder::text_note(text).build(dummy_keys.public_key()))
     }
 
     pub fn send_event(&mut self, mut event: UnsignedEvent) -> Result<UnsignedEvent> {
-        if self.state.their_next_nostr_public_key.is_none()
-            || self.state.our_current_nostr_key.is_none()
-        {
+        if !self.can_send() {
             return Err(Error::NotInitiator);
         }
 

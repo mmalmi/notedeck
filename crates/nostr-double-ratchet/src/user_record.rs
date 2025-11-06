@@ -57,15 +57,45 @@ impl UserRecord {
             }
         });
 
+        // Prefer sendable sessions as active
+        let new_can_send = session.can_send();
+        let old_can_send = device.active_session.as_ref().map(|s| s.can_send()).unwrap_or(false);
+
         if let Some(old_session) = device.active_session.take() {
-            device.inactive_sessions.push(old_session);
+            // If new session can send but old can't, replace
+            // If old session can send but new can't, keep old as active, new as inactive
+            if old_can_send && !new_can_send {
+                device.inactive_sessions.push(session);
+                device.active_session = Some(old_session);
+            } else {
+                device.inactive_sessions.push(old_session);
+                device.active_session = Some(session);
+            }
+        } else {
+            device.active_session = Some(session);
         }
 
-        device.active_session = Some(session);
         device.last_activity = Some(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs());
+    }
+
+    pub fn get_all_sessions_mut(&mut self) -> Vec<&mut Session> {
+        if self.is_stale {
+            return Vec::new();
+        }
+
+        let mut sessions: Vec<&mut Session> = Vec::new();
+        for device in self.device_records.values_mut().filter(|d| !d.is_stale) {
+            if let Some(ref mut active) = device.active_session {
+                sessions.push(active);
+            }
+            for inactive in &mut device.inactive_sessions {
+                sessions.push(inactive);
+            }
+        }
+        sessions
     }
 
     pub fn get_active_sessions_mut(&mut self) -> Vec<&mut Session> {
@@ -81,10 +111,8 @@ impl UserRecord {
             .collect();
 
         sessions.sort_by(|a, b| {
-            let a_can_send = a.state.their_next_nostr_public_key.is_some()
-                && a.state.our_current_nostr_key.is_some();
-            let b_can_send = b.state.their_next_nostr_public_key.is_some()
-                && b.state.our_current_nostr_key.is_some();
+            let a_can_send = a.can_send();
+            let b_can_send = b.can_send();
 
             match (a_can_send, b_can_send) {
                 (true, false) => std::cmp::Ordering::Less,
