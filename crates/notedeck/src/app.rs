@@ -19,8 +19,11 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
+use nostr_double_ratchet::{SessionManager, DebouncedFileStorage, SessionManagerEvent};
+use crossbeam_channel::Receiver;
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
@@ -79,6 +82,9 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     i18n: Localization,
+    session_manager: Option<Arc<SessionManager>>,
+    session_event_rx: Option<Receiver<SessionManagerEvent>>,
+    session_event_tx: Option<crossbeam_channel::Sender<SessionManagerEvent>>,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -128,6 +134,43 @@ impl eframe::App for Notedeck {
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
+
+        // process session manager events
+        if let Some(rx) = &self.session_event_rx {
+            if let Some(manager) = &self.session_manager {
+                while let Ok(event) = rx.try_recv() {
+                    match event {
+                        SessionManagerEvent::Publish(unsigned_event) => {
+                            if let Some(kp) = self.accounts.get_selected_account().key.to_full() {
+                                if let Ok(secret_key) = nostr::SecretKey::from_slice(kp.secret_key.as_secret_bytes()) {
+                                    let keys = nostr::Keys::new(secret_key);
+                                    if let Ok(signed) = unsigned_event.sign_with_keys(&keys) {
+                                        use nostr::JsonUtil;
+                                        let json = signed.as_json();
+                                        if let Ok(msg) = enostr::ClientMessage::event_json(json) {
+                                            self.pool.send(&msg);
+                                            info!("Published session event: kind {}", signed.kind);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        SessionManagerEvent::Subscribe(filter_json) => {
+                            if let Ok(filter) = nostrdb::Filter::from_json(&filter_json) {
+                                let subid = format!("session-{}", uuid::Uuid::new_v4());
+                                self.pool.subscribe(subid.clone(), vec![filter]);
+                                info!("Subscribed to session filter: {}", subid);
+                            } else {
+                                error!("Failed to parse session filter JSON");
+                            }
+                        }
+                        SessionManagerEvent::ReceivedEvent(event) => {
+                            manager.process_received_event(event);
+                        }
+                    }
+                }
+            }
+        }
 
         render_notedeck(self, ctx);
 
@@ -289,6 +332,9 @@ impl Notedeck {
             }
         }
 
+        let (session_event_tx, session_event_rx) = crossbeam_channel::unbounded();
+        let session_manager = Self::init_session_manager(&path, &accounts, session_event_tx.clone());
+
         Self {
             ndb,
             img_cache,
@@ -308,9 +354,73 @@ impl Notedeck {
             zaps,
             job_pool,
             i18n,
+            session_manager,
+            session_event_rx: Some(session_event_rx),
+            session_event_tx: Some(session_event_tx),
             #[cfg(target_os = "android")]
             android_app: None,
         }
+    }
+
+    fn init_session_manager(
+        path: &DataPath,
+        accounts: &Accounts,
+        event_tx: crossbeam_channel::Sender<SessionManagerEvent>,
+    ) -> Option<Arc<SessionManager>> {
+        let selected_account = accounts.get_selected_account();
+        let keypair = selected_account.key.to_full()?;
+        let pubkey = enostr::Pubkey::new(*keypair.pubkey.bytes());
+        let identity_key_bytes = keypair.secret_key.as_secret_bytes();
+        let mut identity_key = [0u8; 32];
+        identity_key.copy_from_slice(identity_key_bytes);
+
+        let device_id = Self::get_or_create_device_id(path, &pubkey);
+
+        let storage_path = path.path(DataPathType::Cache).join("double-ratchet");
+        let storage = match DebouncedFileStorage::new(storage_path, 5000) {
+            Ok(s) => Arc::new(s) as Arc<dyn nostr_double_ratchet::StorageAdapter>,
+            Err(e) => {
+                error!("Failed to create session storage: {}", e);
+                return None;
+            }
+        };
+
+        let manager = SessionManager::new(
+            pubkey,
+            identity_key,
+            device_id,
+            event_tx,
+            Some(storage),
+        );
+
+        if let Err(e) = manager.init() {
+            error!("Failed to initialize session manager: {}", e);
+            return None;
+        }
+
+        Some(Arc::new(manager))
+    }
+
+    fn get_or_create_device_id(path: &DataPath, pubkey: &enostr::Pubkey) -> String {
+        let pubkey_hex = hex::encode(pubkey.bytes());
+        let device_id_path = path.path(DataPathType::Cache)
+            .join("device-ids")
+            .join(&pubkey_hex);
+
+        if let Ok(existing_id) = std::fs::read_to_string(&device_id_path) {
+            if !existing_id.trim().is_empty() {
+                return existing_id.trim().to_string();
+            }
+        }
+
+        let device_id = uuid::Uuid::new_v4().to_string();
+
+        if let Some(parent) = device_id_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&device_id_path, &device_id);
+
+        device_id
     }
 
     /// Setup egui context
@@ -373,6 +483,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
+            session_manager: &self.session_manager,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

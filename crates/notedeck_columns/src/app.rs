@@ -833,6 +833,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Following(_) => false,
         Route::FollowedBy(_) => false,
         Route::Messages => false,
+        Route::NewChat => false,
         Route::Chat(_) => false,
     }
 }

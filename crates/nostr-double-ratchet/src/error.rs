@@ -55,6 +55,9 @@ pub enum Error {
 
     #[error(transparent)]
     Nip44(#[from] nostr::nips::nip44::Error),
+
+    #[error(transparent)]
+    Nostrdb(#[from] nostrdb::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

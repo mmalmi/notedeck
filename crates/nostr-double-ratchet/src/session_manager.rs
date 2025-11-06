@@ -1,15 +1,21 @@
 use crate::{
-    InMemoryStorage, Invite, Result, StorageAdapter, Unsubscribe, UserRecord,
+    InMemoryStorage, Invite, Result, StorageAdapter, UserRecord,
 };
 use enostr::{Filter, Pubkey};
 use nostr::UnsignedEvent;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-type NostrSubscribe = Arc<
-    dyn Fn(Filter, Box<dyn Fn(UnsignedEvent) + Send>) -> Unsubscribe + Send + Sync,
->;
-type NostrPublish = Arc<dyn Fn(UnsignedEvent) -> Result<()> + Send + Sync>;
+pub enum SessionManagerEvent {
+    Subscribe(String),
+    Publish(UnsignedEvent),
+    ReceivedEvent(UnsignedEvent),
+}
+
+struct InviteState {
+    invite: Invite,
+    our_identity_key: [u8; 32],
+}
 
 pub struct SessionManager {
     user_records: Arc<Mutex<HashMap<Pubkey, UserRecord>>>,
@@ -17,39 +23,30 @@ pub struct SessionManager {
     our_identity_key: [u8; 32],
     device_id: String,
     storage: Arc<dyn StorageAdapter>,
-    nostr_subscribe: NostrSubscribe,
-    nostr_publish: NostrPublish,
-    our_device_invite_subscription: Arc<Mutex<Option<Unsubscribe>>>,
-    invite_subscriptions: Arc<Mutex<HashMap<String, Unsubscribe>>>,
-    session_subscriptions: Arc<Mutex<HashMap<String, Unsubscribe>>>,
+    event_tx: crossbeam_channel::Sender<SessionManagerEvent>,
     initialized: Arc<Mutex<bool>>,
+    invite_state: Arc<Mutex<Option<InviteState>>>,
+    pending_invites: Arc<Mutex<HashMap<Pubkey, Invite>>>,
 }
 
 impl SessionManager {
-    pub fn new<S, P>(
+    pub fn new(
         our_public_key: Pubkey,
         our_identity_key: [u8; 32],
         device_id: String,
-        nostr_subscribe: S,
-        nostr_publish: P,
+        event_tx: crossbeam_channel::Sender<SessionManagerEvent>,
         storage: Option<Arc<dyn StorageAdapter>>,
-    ) -> Self
-    where
-        S: Fn(Filter, Box<dyn Fn(UnsignedEvent) + Send>) -> Unsubscribe + Send + Sync + 'static,
-        P: Fn(UnsignedEvent) -> Result<()> + Send + Sync + 'static,
-    {
+    ) -> Self {
         Self {
             user_records: Arc::new(Mutex::new(HashMap::new())),
             our_public_key,
             our_identity_key,
             device_id,
             storage: storage.unwrap_or_else(|| Arc::new(InMemoryStorage::new())),
-            nostr_subscribe: Arc::new(nostr_subscribe),
-            nostr_publish: Arc::new(nostr_publish),
-            our_device_invite_subscription: Arc::new(Mutex::new(None)),
-            invite_subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            session_subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            event_tx,
             initialized: Arc::new(Mutex::new(false)),
+            invite_state: Arc::new(Mutex::new(None)),
+            pending_invites: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -75,41 +72,23 @@ impl SessionManager {
 
         self.storage.put(&device_invite_key, invite.serialize()?)?;
 
-        let nostr_subscribe = self.nostr_subscribe.clone();
-        let our_identity_key = self.our_identity_key;
-        let device_id = self.device_id.clone();
-        let storage = self.storage.clone();
-        let user_records = self.user_records.clone();
+        *self.invite_state.lock().unwrap() = Some(InviteState {
+            invite: invite.clone(),
+            our_identity_key: self.our_identity_key,
+        });
 
-        let unsub = invite.listen(
-            our_identity_key,
-            move |filter, callback| nostr_subscribe(filter, callback),
-            move |session, invitee_pubkey, device_id_opt| {
-                if let Some(dev_id) = device_id_opt {
-                    if dev_id == device_id {
-                        return;
-                    }
+        let filter = Filter::new()
+            .kinds(vec![crate::INVITE_RESPONSE_KIND as u64])
+            .pubkey([invite.inviter_ephemeral_public_key.bytes()])
+            .build();
 
-                    let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
-                    if storage.get(&acceptance_key).ok().flatten().is_some() {
-                        return;
-                    }
-
-                    let _ = storage.put(&acceptance_key, "1".to_string());
-
-                    let mut records = user_records.lock().unwrap();
-                    let user_record = records
-                        .entry(invitee_pubkey)
-                        .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
-                    user_record.upsert_session(Some(&dev_id), session);
-                }
-            },
-        )?;
-
-        *self.our_device_invite_subscription.lock().unwrap() = Some(unsub);
+        let filter_json = filter.json()?;
+        self.event_tx.send(SessionManagerEvent::Subscribe(filter_json))
+            .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
 
         let event = invite.get_event()?;
-        (self.nostr_publish)(event)?;
+        self.event_tx.send(SessionManagerEvent::Publish(event))
+            .map_err(|_| crate::Error::Storage("Failed to send publish".to_string()))?;
 
         Ok(())
     }
@@ -134,7 +113,7 @@ impl SessionManager {
                     if let Some(id) = unsigned_event.id {
                         event_ids.push(id.to_string());
                     }
-                    let _ = (self.nostr_publish)(unsigned_event);
+                    let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
                 }
                 Err(_) => continue,
             }
@@ -148,6 +127,15 @@ impl SessionManager {
 
     pub fn get_device_id(&self) -> &str {
         &self.device_id
+    }
+
+    pub fn get_user_pubkeys(&self) -> Vec<Pubkey> {
+        self.user_records
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect()
     }
 
     fn device_invite_key(&self, device_id: &str) -> String {
@@ -170,61 +158,84 @@ impl SessionManager {
     }
 
     pub fn setup_user(&self, user_pubkey: Pubkey) -> Result<()> {
-        let nostr_subscribe = self.nostr_subscribe.clone();
-        let user_records = self.user_records.clone();
-        let our_public_key = self.our_public_key;
-        let our_identity_key = self.our_identity_key;
-        let device_id = self.device_id.clone();
-        let nostr_publish = self.nostr_publish.clone();
+        let filter = Filter::new()
+            .kinds(vec![crate::INVITE_EVENT_KIND as u64])
+            .authors([user_pubkey.bytes()])
+            .build();
 
-        let _unsub = Invite::from_user(
-            user_pubkey,
-            move |filter, callback| nostr_subscribe(filter, callback),
-            move |invite| {
-                if let Some(ref dev_id) = invite.device_id {
-                    let mut records = user_records.lock().unwrap();
-                    let user_record = records
-                        .entry(user_pubkey)
-                        .or_insert_with(|| UserRecord::new(hex::encode(user_pubkey.bytes())));
+        let filter_json = filter.json()?;
+        self.event_tx.send(SessionManagerEvent::Subscribe(filter_json))
+            .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
 
-                    if user_record.device_records.contains_key(dev_id) {
-                        return;
-                    }
-
-                    drop(records);
-
-                    match invite.accept(our_public_key, our_identity_key, Some(device_id.clone())) {
-                        Ok((session, event)) => {
-                            let _ = nostr_publish(event);
-
-                            let mut records = user_records.lock().unwrap();
-                            let user_record = records
-                                .entry(user_pubkey)
-                                .or_insert_with(|| UserRecord::new(hex::encode(user_pubkey.bytes())));
-                            user_record.upsert_session(Some(dev_id), session);
-                        }
-                        Err(_) => {}
-                    }
-                }
-            },
-        );
+        self.pending_invites.lock().unwrap().insert(user_pubkey, Invite {
+            inviter_ephemeral_public_key: Pubkey::new([0u8; 32]),
+            shared_secret: [0u8; 32],
+            inviter: user_pubkey,
+            inviter_ephemeral_private_key: None,
+            device_id: None,
+            max_uses: None,
+            used_by: Vec::new(),
+            created_at: 0,
+        });
 
         Ok(())
     }
 
-    pub fn close(&self) {
-        if let Some(unsub) = self.our_device_invite_subscription.lock().unwrap().take() {
-            unsub();
-        }
+    pub fn process_received_event(&self, event: UnsignedEvent) {
+        if event.kind.as_u16() == crate::INVITE_RESPONSE_KIND as u16 {
+            if let Some(state) = self.invite_state.lock().unwrap().as_ref() {
+                if let Ok(session) = state.invite.process_invite_response(&event, state.our_identity_key) {
+                    if let Some((sess, invitee_pubkey, device_id)) = session {
+                        if let Some(ref dev_id) = device_id {
+                            if dev_id != &self.device_id {
+                                let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
+                                if self.storage.get(&acceptance_key).ok().flatten().is_none() {
+                                    let _ = self.storage.put(&acceptance_key, "1".to_string());
 
-        let invite_subs = std::mem::take(&mut *self.invite_subscriptions.lock().unwrap());
-        for (_, unsub) in invite_subs {
-            unsub();
-        }
+                                    let mut records = self.user_records.lock().unwrap();
+                                    let user_record = records
+                                        .entry(invitee_pubkey)
+                                        .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
+                                    user_record.upsert_session(Some(dev_id), sess);
+                                    drop(records);
 
-        let session_subs = std::mem::take(&mut *self.session_subscriptions.lock().unwrap());
-        for (_, unsub) in session_subs {
-            unsub();
+                                    let _ = self.store_user_record(&invitee_pubkey);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if event.kind.as_u16() == crate::INVITE_EVENT_KIND as u16 {
+            if let Ok(invite) = Invite::from_event(&event) {
+                if let Some(ref dev_id) = invite.device_id {
+                    let inviter = invite.inviter;
+                    let mut records = self.user_records.lock().unwrap();
+                    let user_record = records
+                        .entry(inviter)
+                        .or_insert_with(|| UserRecord::new(hex::encode(inviter.bytes())));
+
+                    if !user_record.device_records.contains_key(dev_id) {
+                        drop(records);
+
+                        match invite.accept(self.our_public_key, self.our_identity_key, Some(self.device_id.clone())) {
+                            Ok((session, event)) => {
+                                let _ = self.event_tx.send(SessionManagerEvent::Publish(event));
+
+                                let mut records = self.user_records.lock().unwrap();
+                                let user_record = records
+                                    .entry(inviter)
+                                    .or_insert_with(|| UserRecord::new(hex::encode(inviter.bytes())));
+                                user_record.upsert_session(Some(dev_id), session);
+                                drop(records);
+
+                                let _ = self.store_user_record(&inviter);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -241,18 +252,13 @@ mod tests {
         let identity_key = keys.secret_key().to_secret_bytes();
         let device_id = "test-device".to_string();
 
-        let subscribe = |_filter: Filter, _callback: Box<dyn Fn(UnsignedEvent) + Send>| {
-            Box::new(|| {}) as Unsubscribe
-        };
-
-        let publish = |_event: UnsignedEvent| Ok(());
+        let (tx, _rx) = crossbeam_channel::unbounded();
 
         let manager = SessionManager::new(
             pubkey,
             identity_key,
             device_id.clone(),
-            subscribe,
-            publish,
+            tx,
             None,
         );
 
@@ -266,18 +272,13 @@ mod tests {
         let identity_key = keys.secret_key().to_secret_bytes();
         let device_id = "test-device".to_string();
 
-        let subscribe = |_filter: Filter, _callback: Box<dyn Fn(UnsignedEvent) + Send>| {
-            Box::new(|| {}) as Unsubscribe
-        };
-
-        let publish = |_event: UnsignedEvent| Ok(());
+        let (tx, _rx) = crossbeam_channel::unbounded();
 
         let manager = SessionManager::new(
             pubkey,
             identity_key,
             device_id,
-            subscribe,
-            publish,
+            tx,
             None,
         );
 

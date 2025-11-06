@@ -92,6 +92,10 @@ impl<'a> DesktopSidePanel<'a> {
         }
     }
 
+    fn can_show_messages(&self) -> bool {
+        self.selected_account.key.to_full().is_some()
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<SidePanelResponse> {
         let frame =
             egui::Frame::new().inner_margin(Margin::same(notedeck_ui::constants::FRAME_MARGIN));
@@ -129,7 +133,11 @@ impl<'a> DesktopSidePanel<'a> {
                 .show(ui, |ui| {
                     ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
                         let home_resp = ui.add(home_button(self.current_route));
-                        let messages_resp = ui.add(messages_button(self.current_route));
+                        let messages_resp = if self.can_show_messages() {
+                            Some(ui.add(messages_button(self.current_route)))
+                        } else {
+                            None
+                        };
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
@@ -167,7 +175,7 @@ impl<'a> DesktopSidePanel<'a> {
                     })
                 });
 
-            let (home_resp, messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
+            let (home_resp, opt_messages_resp, dave_resp, compose_resp, search_resp, column_resp, settings_resp, profile_resp, wallet_resp, support_resp, add_deck_resp, decks_inner) = scroll_out.inner.inner;
 
             let remaining = ui.available_height();
             if remaining > avatar_section_height {
@@ -237,8 +245,8 @@ impl<'a> DesktopSidePanel<'a> {
                 Some(SidePanelResponse::new(SidePanelAction::Relays, connectivity_resp))
             } else if home_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Home, home_resp))
-            } else if messages_resp.clicked() {
-                Some(SidePanelResponse::new(SidePanelAction::Messages, messages_resp))
+            } else if opt_messages_resp.as_ref().map_or(false, |r| r.clicked()) {
+                opt_messages_resp.map(|r| SidePanelResponse::new(SidePanelAction::Messages, r))
             } else if dave_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Dave, dave_resp))
             } else if pfp_resp.clicked() {

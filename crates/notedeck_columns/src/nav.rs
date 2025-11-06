@@ -634,6 +634,7 @@ fn render_nav_body(
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
+        session_manager: ctx.session_manager,
     };
 
     match top {
@@ -1011,14 +1012,23 @@ fn render_nav_body(
             let action = None;
             let scroll_resp = ScrollArea::vertical()
                 .show(ui, |ui| {
-                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache).ui(ui)
+                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache, note_context.ndb, note_context.session_manager).ui(ui)
                 });
 
-            if let Some(crate::ui::messages::MessageAction::OpenConversation(chat_id)) = scroll_resp.inner {
-                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
-                    .column_mut(col)
-                    .router_mut()
-                    .route_to(Route::Chat(chat_id));
+            match scroll_resp.inner {
+                Some(crate::ui::messages::MessageAction::OpenConversation(chat_id)) => {
+                    get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                        .column_mut(col)
+                        .router_mut()
+                        .route_to(Route::Chat(chat_id));
+                }
+                Some(crate::ui::messages::MessageAction::NewChat) => {
+                    get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                        .column_mut(col)
+                        .router_mut()
+                        .route_to(Route::NewChat);
+                }
+                None => {}
             }
 
             let scroll_with_action = ScrollAreaOutput {
@@ -1031,8 +1041,21 @@ fn render_nav_body(
 
             BodyResponse::scroll(scroll_with_action)
         }
+        Route::NewChat => {
+            if let Some(action) = crate::ui::NewChatView::new(note_context.i18n, note_context.session_manager).ui(ui) {
+                match action {
+                    crate::ui::new_chat::NewChatAction::ChatStarted(pubkey_hex) => {
+                        get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                            .column_mut(col)
+                            .router_mut()
+                            .route_to(Route::Chat(pubkey_hex));
+                    }
+                }
+            }
+            BodyResponse::none()
+        }
         Route::Chat(chat_id) => {
-            crate::ui::ChatView::new(note_context.i18n, note_context.img_cache, chat_id.clone())
+            crate::ui::ChatView::new(note_context.i18n, note_context.img_cache, note_context.ndb, chat_id.clone(), note_context.session_manager)
                 .ui(ui);
             BodyResponse::none()
         }

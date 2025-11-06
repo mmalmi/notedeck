@@ -34,6 +34,7 @@ pub enum Route {
     Following(Pubkey),
     FollowedBy(Pubkey),
     Messages,
+    NewChat,
     Chat(String),
 }
 
@@ -152,6 +153,9 @@ impl Route {
             }
             Route::Messages => {
                 writer.write_token("messages");
+            }
+            Route::NewChat => {
+                writer.write_token("new-chat");
             }
             Route::Chat(id) => {
                 writer.write_token("chat");
@@ -439,6 +443,11 @@ impl Route {
                 i18n,
                 "Messages",
                 "Column title for direct messages"
+            )),
+            Route::NewChat => ColumnTitle::formatted(tr!(
+                i18n,
+                "New Chat",
+                "Column title for starting new chat"
             )),
             Route::Chat(_) => ColumnTitle::formatted(tr!(
                 i18n,

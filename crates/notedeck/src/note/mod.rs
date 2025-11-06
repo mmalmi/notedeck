@@ -15,6 +15,8 @@ use nostrdb::{Ndb, Note, NoteKey, QueryResult, Transaction};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
+use nostr_double_ratchet::SessionManager;
+use std::sync::Arc;
 
 /// Aggregates dependencies to reduce the number of parameters
 /// passed to inner UI elements, minimizing prop drilling.
@@ -30,6 +32,7 @@ pub struct NoteContext<'d> {
     pub job_pool: &'d mut JobPool,
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
+    pub session_manager: &'d Option<Arc<SessionManager>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 base64 = { workspace = true }
 urlencoding = "2.1"
 rand = { workspace = true }
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

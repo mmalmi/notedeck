@@ -5,6 +5,7 @@ use nostr::nips::nip44::{self, Version};
 use base64::Engine;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct Invite {
     pub inviter_ephemeral_public_key: Pubkey,
     pub shared_secret: [u8; 32],
@@ -266,180 +267,88 @@ impl Invite {
         })
     }
 
-    pub fn listen<F>(
+    pub fn listen(
         &self,
-        inviter_private_key: [u8; 32],
-        subscribe: impl Fn(Filter, Box<dyn Fn(UnsignedEvent) + Send>) -> Unsubscribe + Send + Sync + 'static,
-        on_session: F,
-    ) -> Result<Unsubscribe>
-    where
-        F: Fn(Session, Pubkey, Option<String>) + Send + 'static,
-    {
-        let inviter_ephemeral_private_key = self.inviter_ephemeral_private_key
-            .ok_or(Error::Invite("Inviter ephemeral private key not available".to_string()))?;
-
+        event_tx: crossbeam_channel::Sender<crate::session_manager::SessionManagerEvent>,
+    ) -> Result<()> {
         let filter = Filter::new()
             .kinds(vec![INVITE_RESPONSE_KIND as u64])
             .pubkey([self.inviter_ephemeral_public_key.bytes()])
             .build();
 
-        let shared_secret = self.shared_secret;
-        let max_uses = self.max_uses;
-        let used_by = Arc::new(Mutex::new(self.used_by.clone()));
+        let filter_json = filter.json()?;
+        event_tx.send(crate::session_manager::SessionManagerEvent::Subscribe(filter_json))
+            .map_err(|_| Error::Storage("Failed to send subscribe".to_string()))?;
 
-        let callback = move |event: UnsignedEvent| {
-            if let Some(max) = max_uses {
-                if used_by.lock().unwrap().len() >= max {
-                    return;
-                }
-            }
-
-            let inviter_ephemeral_sk = match nostr::SecretKey::from_slice(&inviter_ephemeral_private_key) {
-                Ok(sk) => sk,
-                Err(_) => return,
-            };
-
-            let sender_pk = match nostr::PublicKey::from_slice(&event.pubkey.to_bytes()) {
-                Ok(pk) => pk,
-                Err(_) => return,
-            };
-
-            let decrypted = match nip44::decrypt(&inviter_ephemeral_sk, &sender_pk, &event.content) {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-
-            let inner_event: serde_json::Value = match serde_json::from_str(&decrypted) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-
-            let invitee_identity_hex = match inner_event["pubkey"].as_str() {
-                Some(s) => s,
-                None => return,
-            };
-
-            let invitee_identity = match crate::utils::pubkey_from_hex(invitee_identity_hex) {
-                Ok(pk) => pk,
-                Err(_) => return,
-            };
-
-            used_by.lock().unwrap().push(invitee_identity);
-
-            let inner_content = match inner_event["content"].as_str() {
-                Some(s) => s,
-                None => return,
-            };
-
-            let conversation_key = nip44::v2::ConversationKey::new(shared_secret);
-            let ciphertext_bytes = match base64::engine::general_purpose::STANDARD.decode(inner_content) {
-                Ok(b) => b,
-                Err(_) => return,
-            };
-
-            let dh_encrypted = match nip44::v2::decrypt_to_bytes(&conversation_key, &ciphertext_bytes) {
-                Ok(bytes) => match String::from_utf8(bytes) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                },
-                Err(_) => return,
-            };
-
-            let inviter_sk = match nostr::SecretKey::from_slice(&inviter_private_key) {
-                Ok(sk) => sk,
-                Err(_) => return,
-            };
-
-            let invitee_pk = match nostr::PublicKey::from_slice(invitee_identity.bytes()) {
-                Ok(pk) => pk,
-                Err(_) => return,
-            };
-
-            let decrypted_payload = match nip44::decrypt(&inviter_sk, &invitee_pk, &dh_encrypted) {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-
-            let payload: serde_json::Value = match serde_json::from_str(&decrypted_payload) {
-                Ok(v) => v,
-                Err(_) => {
-                    let invitee_session_pubkey = match crate::utils::pubkey_from_hex(&decrypted_payload) {
-                        Ok(pk) => pk,
-                        Err(_) => return,
-                    };
-
-                    let session = match Session::init(
-                        invitee_session_pubkey,
-                        inviter_ephemeral_private_key,
-                        false,
-                        shared_secret,
-                        event.id.map(|id| id.to_string()),
-                    ) {
-                        Ok(s) => s,
-                        Err(_) => return,
-                    };
-
-                    on_session(session, invitee_identity, None);
-                    return;
-                }
-            };
-
-            let invitee_session_key_hex = match payload["sessionKey"].as_str() {
-                Some(s) => s,
-                None => return,
-            };
-
-            let invitee_session_pubkey = match crate::utils::pubkey_from_hex(invitee_session_key_hex) {
-                Ok(pk) => pk,
-                Err(_) => return,
-            };
-
-            let device_id = payload["deviceId"].as_str().map(String::from);
-
-            let session = match Session::init(
-                invitee_session_pubkey,
-                inviter_ephemeral_private_key,
-                false,
-                shared_secret,
-                event.id.map(|id| id.to_string()),
-            ) {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-
-            on_session(session, invitee_identity, device_id);
-        };
-
-        Ok(subscribe(filter, Box::new(callback)))
+        Ok(())
     }
 
-    pub fn from_user<F>(
+    pub fn from_user(
         user_pubkey: Pubkey,
-        subscribe: impl Fn(Filter, Box<dyn Fn(UnsignedEvent) + Send>) -> Unsubscribe + Send + Sync + 'static,
-        on_invite: F,
-    ) -> Unsubscribe
-    where
-        F: Fn(Invite) + Send + 'static,
-    {
+        event_tx: crossbeam_channel::Sender<crate::session_manager::SessionManagerEvent>,
+    ) -> Result<()> {
         let filter = Filter::new()
             .kinds(vec![INVITE_EVENT_KIND as u64])
             .authors([user_pubkey.bytes()])
             .build();
 
-        let seen_ids = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let filter_json = filter.json()?;
+        event_tx.send(crate::session_manager::SessionManagerEvent::Subscribe(filter_json))
+            .map_err(|_| Error::Storage("Failed to send subscribe".to_string()))?;
 
-        let callback = move |event: UnsignedEvent| {
-            let event_id = format!("{:?}", event.id);
-            if seen_ids.lock().unwrap().contains(&event_id) {
-                return;
-            }
-            seen_ids.lock().unwrap().insert(event_id);
+        Ok(())
+    }
 
-            if let Ok(invite) = Invite::from_event(&event) {
-                on_invite(invite);
+    pub fn process_invite_response(&self, event: &UnsignedEvent, inviter_private_key: [u8; 32]) -> Result<Option<(Session, Pubkey, Option<String>)>> {
+        let inviter_ephemeral_private_key = self.inviter_ephemeral_private_key
+            .ok_or(Error::Invite("Ephemeral key not available".to_string()))?;
+
+        let inviter_ephemeral_sk = nostr::SecretKey::from_slice(&inviter_ephemeral_private_key)?;
+        let sender_pk = nostr::PublicKey::from_slice(&event.pubkey.to_bytes())?;
+        let decrypted = nip44::decrypt(&inviter_ephemeral_sk, &sender_pk, &event.content)?;
+        let inner_event: serde_json::Value = serde_json::from_str(&decrypted)?;
+
+        let invitee_identity_hex = inner_event["pubkey"].as_str()
+            .ok_or(Error::Invite("Missing pubkey".to_string()))?;
+        let invitee_identity = crate::utils::pubkey_from_hex(invitee_identity_hex)?;
+
+        let inner_content = inner_event["content"].as_str()
+            .ok_or(Error::Invite("Missing content".to_string()))?;
+
+        let conversation_key = nip44::v2::ConversationKey::new(self.shared_secret);
+        let ciphertext_bytes = base64::engine::general_purpose::STANDARD.decode(inner_content)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        let dh_encrypted = String::from_utf8(nip44::v2::decrypt_to_bytes(&conversation_key, &ciphertext_bytes)?)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+
+        let payload: serde_json::Value = match serde_json::from_str(&dh_encrypted) {
+            Ok(p) => p,
+            Err(_) => {
+                let invitee_session_pubkey = crate::utils::pubkey_from_hex(&dh_encrypted)?;
+                let session = Session::init(
+                    invitee_session_pubkey,
+                    inviter_ephemeral_private_key,
+                    false,
+                    self.shared_secret,
+                    event.id.map(|id| id.to_string()),
+                )?;
+                return Ok(Some((session, invitee_identity, None)));
             }
         };
 
-        subscribe(filter, Box::new(callback))
+        let invitee_session_key_hex = payload["sessionKey"].as_str()
+            .ok_or(Error::Invite("Missing sessionKey".to_string()))?;
+        let invitee_session_pubkey = crate::utils::pubkey_from_hex(invitee_session_key_hex)?;
+        let device_id = payload["deviceId"].as_str().map(String::from);
+
+        let session = Session::init(
+            invitee_session_pubkey,
+            inviter_ephemeral_private_key,
+            false,
+            self.shared_secret,
+            event.id.map(|id| id.to_string()),
+        )?;
+
+        Ok(Some((session, invitee_identity, device_id)))
     }
 }

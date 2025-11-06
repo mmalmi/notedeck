@@ -1,23 +1,32 @@
 use egui::{RichText, ScrollArea, Vec2};
 use notedeck::{tr, Localization};
 use notedeck_ui::ProfilePic;
+use nostr_double_ratchet::SessionManager;
+use std::sync::Arc;
+use nostrdb::{Ndb, Transaction};
 
 pub struct ChatView<'a> {
     i18n: &'a mut Localization,
     img_cache: &'a mut notedeck::Images,
+    ndb: &'a Ndb,
     chat_id: String,
+    session_manager: &'a Option<Arc<SessionManager>>,
 }
 
 impl<'a> ChatView<'a> {
     pub fn new(
         i18n: &'a mut Localization,
         img_cache: &'a mut notedeck::Images,
+        ndb: &'a Ndb,
         chat_id: String,
+        session_manager: &'a Option<Arc<SessionManager>>,
     ) -> Self {
         Self {
             i18n,
             img_cache,
+            ndb,
             chat_id,
+            session_manager,
         }
     }
 
@@ -38,14 +47,17 @@ impl<'a> ChatView<'a> {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                let messages = get_mock_messages(&self.chat_id);
-
                                 ui.add_space(8.0);
 
-                                for message in messages {
-                                    self.render_message(ui, &message);
-                                    ui.add_space(8.0);
-                                }
+                                // TODO: get actual messages from SessionManager
+                                // For now, show empty state
+                                ui.centered_and_justified(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("No messages yet")
+                                            .size(14.0)
+                                            .color(ui.visuals().weak_text_color()),
+                                    );
+                                });
                             });
                         });
                 },
@@ -60,15 +72,42 @@ impl<'a> ChatView<'a> {
             ui.add_space(8.0);
 
             let pfp_size = 36.0;
-            let profile_pic = get_profile_pic(&self.chat_id);
-            ui.add(&mut ProfilePic::new(self.img_cache, profile_pic).size(pfp_size));
+
+            let (profile_url, display_name): (String, String) = match hex::decode(&self.chat_id) {
+                Ok(pubkey_bytes) if pubkey_bytes.len() == 32 => {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(&pubkey_bytes);
+                    match Transaction::new(self.ndb) {
+                        Ok(txn) => {
+                            match self.ndb.get_profile_by_pubkey(&txn, &bytes) {
+                                Ok(profile) => {
+                                    let url = notedeck::profile::get_profile_url(Some(&profile)).to_string();
+                                    let name = notedeck::name::get_display_name(Some(&profile));
+                                    (url, name.name().to_string())
+                                }
+                                Err(_) => {
+                                    (notedeck::profile::no_pfp_url().to_string(), format!("{}...", &self.chat_id[..16]))
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            (notedeck::profile::no_pfp_url().to_string(), format!("{}...", &self.chat_id[..16]))
+                        }
+                    }
+                }
+                _ => {
+                    (notedeck::profile::no_pfp_url().to_string(), self.chat_id.clone())
+                }
+            };
+
+            ui.add(&mut ProfilePic::new(self.img_cache, &profile_url).size(pfp_size));
 
             ui.add_space(8.0);
 
             ui.vertical(|ui| {
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(get_display_name(&self.chat_id))
+                    RichText::new(display_name)
                         .size(16.0)
                         .strong(),
                 );
@@ -78,73 +117,6 @@ impl<'a> ChatView<'a> {
         ui.add_space(8.0);
     }
 
-    fn render_message(&mut self, ui: &mut egui::Ui, message: &MockMessage) {
-        let margin = 16.0;
-        let max_width = (ui.available_width() - margin * 2.0) * 0.7;
-
-        if message.is_sent {
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    ui.add_space(margin);
-                    self.render_message_bubble(ui, message, max_width, true);
-                });
-            });
-        } else {
-            ui.horizontal(|ui| {
-                ui.add_space(margin);
-                self.render_message_bubble(ui, message, max_width, false);
-                ui.add_space(margin);
-            });
-        }
-    }
-
-    fn render_message_bubble(
-        &self,
-        ui: &mut egui::Ui,
-        message: &MockMessage,
-        max_width: f32,
-        is_sent: bool,
-    ) {
-        let bg_color = if is_sent {
-            egui::Color32::from_rgb(88, 86, 214)
-        } else {
-            if ui.visuals().dark_mode {
-                egui::Color32::from_rgb(40, 40, 45)
-            } else {
-                egui::Color32::from_rgb(240, 240, 245)
-            }
-        };
-
-        let text_color = if is_sent {
-            egui::Color32::WHITE
-        } else {
-            ui.visuals().text_color()
-        };
-
-        egui::Frame::new()
-            .fill(bg_color)
-            .corner_radius(12.0)
-            .inner_margin(12.0)
-            .show(ui, |ui| {
-                ui.set_max_width(max_width);
-
-                ui.label(RichText::new(&message.content).size(14.0).color(text_color));
-
-                ui.add_space(2.0);
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
-                    ui.label(
-                        RichText::new(&message.timestamp)
-                            .size(11.0)
-                            .color(if is_sent {
-                                egui::Color32::from_white_alpha(180)
-                            } else {
-                                ui.visuals().weak_text_color()
-                            }),
-                    );
-                });
-            });
-    }
 
     fn render_input(&mut self, ui: &mut egui::Ui) {
         let margin = 16;
@@ -241,120 +213,35 @@ impl<'a> ChatView<'a> {
                     || send_resp.clicked();
 
                 if should_send && !input_text.trim().is_empty() {
-                    tracing::info!("Sending message to {}: {}", self.chat_id, input_text);
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(input_id, String::new());
-                    });
+                    if let Some(manager) = self.session_manager {
+                        if let Ok(pubkey_bytes) = hex::decode(&self.chat_id) {
+                            if pubkey_bytes.len() == 32 {
+                                let mut bytes = [0u8; 32];
+                                bytes.copy_from_slice(&pubkey_bytes);
+                                let recipient = enostr::Pubkey::new(bytes);
+                                match manager.send_text(recipient, input_text.clone()) {
+                                    Ok(event_ids) => {
+                                        if event_ids.is_empty() {
+                                            tracing::warn!("No active sessions with {}. Waiting for handshake.", &self.chat_id);
+                                        } else {
+                                            tracing::info!("Sent {} messages to {}", event_ids.len(), &self.chat_id);
+                                            ui.ctx().data_mut(|d| {
+                                                d.insert_temp(input_id, String::new());
+                                            });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to send message: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::warn!("SessionManager not initialized, cannot send message");
+                    }
                 }
             });
         });
     }
 }
 
-struct MockMessage {
-    content: String,
-    timestamp: String,
-    is_sent: bool,
-}
-
-fn get_mock_messages(chat_id: &str) -> Vec<MockMessage> {
-    match chat_id {
-        "alice" => vec![
-            MockMessage {
-                content: "Hey! How are you doing?".to_string(),
-                timestamp: "10:32 AM".to_string(),
-                is_sent: false,
-            },
-            MockMessage {
-                content: "I'm good! Just working on some code.".to_string(),
-                timestamp: "10:33 AM".to_string(),
-                is_sent: true,
-            },
-            MockMessage {
-                content: "Nice! What are you building?".to_string(),
-                timestamp: "10:34 AM".to_string(),
-                is_sent: false,
-            },
-            MockMessage {
-                content: "A messaging interface for a Nostr client".to_string(),
-                timestamp: "10:35 AM".to_string(),
-                is_sent: true,
-            },
-            MockMessage {
-                content: "That sounds exciting! Are we still meeting tomorrow?".to_string(),
-                timestamp: "10:36 AM".to_string(),
-                is_sent: false,
-            },
-            MockMessage {
-                content: "Yes! Let's meet at 3pm".to_string(),
-                timestamp: "10:37 AM".to_string(),
-                is_sent: true,
-            },
-        ],
-        "bob" => vec![
-            MockMessage {
-                content: "Thanks for the help earlier!".to_string(),
-                timestamp: "9:15 AM".to_string(),
-                is_sent: false,
-            },
-            MockMessage {
-                content: "No problem! Happy to help.".to_string(),
-                timestamp: "9:16 AM".to_string(),
-                is_sent: true,
-            },
-            MockMessage {
-                content: "The code is working perfectly now".to_string(),
-                timestamp: "9:17 AM".to_string(),
-                is_sent: false,
-            },
-        ],
-        "carol" => vec![
-            MockMessage {
-                content: "Did you see the new update?".to_string(),
-                timestamp: "Yesterday".to_string(),
-                is_sent: false,
-            },
-            MockMessage {
-                content: "Not yet, what changed?".to_string(),
-                timestamp: "Yesterday".to_string(),
-                is_sent: true,
-            },
-            MockMessage {
-                content: "They added a bunch of new features!".to_string(),
-                timestamp: "Yesterday".to_string(),
-                is_sent: false,
-            },
-        ],
-        _ => vec![
-            MockMessage {
-                content: "Hello!".to_string(),
-                timestamp: "Just now".to_string(),
-                is_sent: false,
-            },
-        ],
-    }
-}
-
-fn get_display_name(chat_id: &str) -> &str {
-    match chat_id {
-        "alice" => "Alice",
-        "bob" => "Bob",
-        "carol" => "Carol",
-        "dave" => "Dave",
-        "eve" => "Eve",
-        "frank" => "Frank",
-        _ => "Unknown",
-    }
-}
-
-fn get_profile_pic(chat_id: &str) -> &'static str {
-    match chat_id {
-        "alice" => "https://i.pravatar.cc/150?img=1",
-        "bob" => "https://i.pravatar.cc/150?img=12",
-        "carol" => "https://i.pravatar.cc/150?img=5",
-        "dave" => "https://i.pravatar.cc/150?img=13",
-        "eve" => "https://i.pravatar.cc/150?img=9",
-        "frank" => "https://i.pravatar.cc/150?img=33",
-        _ => "https://i.pravatar.cc/150?img=0",
-    }
-}

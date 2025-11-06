@@ -15,4 +15,4 @@ pub use types::*;
 pub use storage::{StorageAdapter, InMemoryStorage};
 pub use file_storage::{FileStorageAdapter, DebouncedFileStorage};
 pub use user_record::{UserRecord, DeviceRecord, StoredUserRecord, StoredDeviceRecord};
-pub use session_manager::SessionManager;
+pub use session_manager::{SessionManager, SessionManagerEvent};

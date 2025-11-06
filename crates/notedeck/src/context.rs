@@ -7,6 +7,8 @@ use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
 use nostrdb::Ndb;
+use nostr_double_ratchet::SessionManager;
+use std::sync::Arc;
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
@@ -29,6 +31,7 @@ pub struct AppContext<'a> {
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
     pub i18n: &'a mut Localization,
+    pub session_manager: &'a Option<Arc<SessionManager>>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

@@ -1,14 +1,28 @@
 use egui::{Label, RichText, Stroke, Vec2};
 use notedeck::theme::PURPLE;
 use notedeck_ui::ProfilePic;
+use nostr_double_ratchet::SessionManager;
+use std::sync::Arc;
+use nostrdb::{Ndb, Transaction};
 
 pub struct MessagesView<'a> {
     img_cache: &'a mut notedeck::Images,
+    ndb: &'a Ndb,
+    session_manager: &'a Option<Arc<SessionManager>>,
 }
 
 impl<'a> MessagesView<'a> {
-    pub fn new(_i18n: &'a mut notedeck::Localization, img_cache: &'a mut notedeck::Images) -> Self {
-        Self { img_cache }
+    pub fn new(
+        _i18n: &'a mut notedeck::Localization,
+        img_cache: &'a mut notedeck::Images,
+        ndb: &'a Ndb,
+        session_manager: &'a Option<Arc<SessionManager>>,
+    ) -> Self {
+        Self {
+            img_cache,
+            ndb,
+            session_manager,
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<MessageAction> {
@@ -16,9 +30,50 @@ impl<'a> MessagesView<'a> {
 
         ui.add_space(8.0);
 
-        let mock_conversations = get_mock_conversations();
+        if self.session_manager.is_some() {
+            let new_chat_resp = self.render_new_chat_button(ui);
+            if new_chat_resp.clicked() {
+                return Some(MessageAction::NewChat);
+            }
+            ui.add_space(8.0);
+        }
 
-        for conversation in mock_conversations {
+        let conversations = if let Some(manager) = self.session_manager {
+            let Ok(txn) = Transaction::new(self.ndb) else {
+                return None;
+            };
+
+            manager.get_user_pubkeys()
+                .iter()
+                .map(|pubkey| {
+                    let pubkey_hex = hex::encode(pubkey.bytes());
+
+                    let (display_name, profile_pic) = match self.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()) {
+                        Ok(profile) => {
+                            let name = notedeck::name::get_display_name(Some(&profile)).name().to_string();
+                            let pic = notedeck::profile::get_profile_url(Some(&profile)).to_string();
+                            (name, pic)
+                        }
+                        Err(_) => {
+                            (format!("{}...", &pubkey_hex[..16]), notedeck::profile::no_pfp_url().to_string())
+                        }
+                    };
+
+                    MockConversation {
+                        pubkey: pubkey_hex,
+                        display_name,
+                        profile_pic,
+                        last_message: "No messages yet".to_string(),
+                        timestamp: "".to_string(),
+                        unread: false,
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        for conversation in conversations {
             let resp = self.render_conversation_item(ui, &conversation)
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.clicked() {
@@ -64,7 +119,7 @@ impl<'a> MessagesView<'a> {
                 Vec2::new(pfp_size, pfp_size),
             );
 
-            ui.put(pfp_rect, &mut ProfilePic::new(self.img_cache, conversation.profile_pic)
+            ui.put(pfp_rect, &mut ProfilePic::new(self.img_cache, &conversation.profile_pic)
                 .size(pfp_size));
 
             let text_left = pfp_rect.right() + 12.0;
@@ -145,70 +200,57 @@ impl<'a> MessagesView<'a> {
 
         resp
     }
+
+    fn render_new_chat_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let (rect, resp) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width() - 32.0, 48.0),
+            egui::Sense::click(),
+        );
+
+        if ui.is_rect_visible(rect) {
+            let bg_color = if resp.hovered() {
+                ui.visuals().widgets.hovered.bg_fill
+            } else {
+                PURPLE
+            };
+
+            ui.painter().rect_filled(rect, 8.0, bg_color);
+
+            let icon_size = 24.0;
+            let text_left = rect.left() + 16.0;
+
+            ui.painter().text(
+                egui::pos2(text_left, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "+",
+                egui::FontId::proportional(icon_size),
+                egui::Color32::WHITE,
+            );
+
+            ui.painter().text(
+                egui::pos2(text_left + icon_size + 8.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "New Chat",
+                egui::FontId::proportional(15.0),
+                egui::Color32::WHITE,
+            );
+        }
+
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
 }
 
 pub enum MessageAction {
     OpenConversation(String),
+    NewChat,
 }
 
 struct MockConversation {
     pubkey: String,
     display_name: String,
-    profile_pic: &'static str,
+    profile_pic: String,
     last_message: String,
     timestamp: String,
     unread: bool,
 }
 
-fn get_mock_conversations() -> Vec<MockConversation> {
-    vec![
-        MockConversation {
-            pubkey: "alice".to_string(),
-            display_name: "Alice".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=1",
-            last_message: "Hey, are we still meeting tomorrow?".to_string(),
-            timestamp: "2m".to_string(),
-            unread: true,
-        },
-        MockConversation {
-            pubkey: "bob".to_string(),
-            display_name: "Bob".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=12",
-            last_message: "Thanks for the help!".to_string(),
-            timestamp: "1h".to_string(),
-            unread: false,
-        },
-        MockConversation {
-            pubkey: "carol".to_string(),
-            display_name: "Carol".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=5",
-            last_message: "Did you see the new update?".to_string(),
-            timestamp: "3h".to_string(),
-            unread: true,
-        },
-        MockConversation {
-            pubkey: "dave".to_string(),
-            display_name: "Dave".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=13",
-            last_message: "Let me know when you're free".to_string(),
-            timestamp: "1d".to_string(),
-            unread: false,
-        },
-        MockConversation {
-            pubkey: "eve".to_string(),
-            display_name: "Eve".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=9",
-            last_message: "Check out this article I found".to_string(),
-            timestamp: "2d".to_string(),
-            unread: false,
-        },
-        MockConversation {
-            pubkey: "frank".to_string(),
-            display_name: "Frank".to_string(),
-            profile_pic: "https://i.pravatar.cc/150?img=33",
-            last_message: "Great work on the project!".to_string(),
-            timestamp: "3d".to_string(),
-            unread: false,
-        },
-    ]
-}
