@@ -399,9 +399,10 @@ impl<'a> SettingsView<'a> {
         );
         settings_group(ui, title, |ui| {
             // Image cache size row
-            let static_imgs_size = self.note_context.img_cache.static_imgs.cache_size.lock().unwrap();
-            let gifs_size = self.note_context.img_cache.gifs.cache_size.lock().unwrap();
-            let total_size = [static_imgs_size, gifs_size].iter().fold(0_u64, |acc, cur| acc + cur.unwrap_or_default());
+            let static_imgs_size = *self.note_context.img_cache.static_imgs.cache_size.lock().unwrap();
+            let gifs_size = *self.note_context.img_cache.gifs.cache_size.lock().unwrap();
+            let blossom_size_val = *self.note_context.img_cache.blossom.cache_size.lock().unwrap();
+            let total_size = [static_imgs_size, gifs_size, blossom_size_val].iter().fold(0_u64, |acc, cur| acc + cur.unwrap_or_default());
 
             ui.horizontal(|ui| {
                 ui.set_height(44.0);
@@ -415,6 +416,27 @@ impl<'a> SettingsView<'a> {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
                     ui.label(format_size(total_size));
+                });
+            });
+
+            // Blossom cache size row (detail)
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(32.0);
+                ui.label(RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Blossom (content-addressed)",
+                    "Label for Blossom cache size detail, Storage settings section"
+                )).text_style(NotedeckTextStyle::Body.text_style()).color(ui.visuals().weak_text_color()));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    ui.label(RichText::new(format_size(blossom_size_val.unwrap_or_default())).color(ui.visuals().weak_text_color()));
                 });
             });
 

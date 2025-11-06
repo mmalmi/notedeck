@@ -130,6 +130,18 @@ fn sha256_hex(contents: &Vec<u8>) -> String {
     hex::encode(hash)
 }
 
+fn save_to_blossom_cache(content_hash: &str, file_contents: &[u8]) {
+    use notedeck::{DataPath, DataPathType, MediaCache, MediaCacheType};
+
+    let data_path = DataPath::default();
+    let cache_dir = data_path.path(DataPathType::Cache);
+    let blossom_cache_dir = cache_dir.join(MediaCache::rel_dir(MediaCacheType::Blossom));
+
+    if let Err(e) = MediaCache::write_blossom(&blossom_cache_dir, content_hash, file_contents) {
+        tracing::warn!("Failed to save to blossom cache: {}", e);
+    }
+}
+
 pub fn nip96_upload(
     seckey: [u8; 32],
     upload_url: String,
@@ -179,7 +191,7 @@ fn internal_nip96_upload(
     };
 
     let file_hash = sha256_hex(&file_contents);
-    let nip98_note = create_nip98_note(&seckey, upload_url.to_owned(), file_hash);
+    let nip98_note = create_nip98_note(&seckey, upload_url.to_owned(), file_hash.clone());
 
     let nip98_base64 = match nip98_note.json() {
         Ok(json) => BASE64_URL_SAFE.encode(json),
@@ -190,7 +202,7 @@ fn internal_nip96_upload(
         &upload_url,
         &file_name,
         mime_type,
-        file_contents,
+        file_contents.clone(),
         &nip98_base64,
     );
 
@@ -201,7 +213,16 @@ fn internal_nip96_upload(
             Ok(response) => {
                 if response.ok {
                     match String::from_utf8(response.bytes.clone()) {
-                        Ok(str_response) => find_nip94_ev_in_json(str_response),
+                        Ok(str_response) => {
+                            let result = find_nip94_ev_in_json(str_response);
+
+                            // Save to blossom cache on successful upload
+                            if result.is_ok() {
+                                save_to_blossom_cache(&file_hash, &file_contents);
+                            }
+
+                            result
+                        }
                         Err(e) => Err(Error::Generic(e.to_string())),
                     }
                 } else {

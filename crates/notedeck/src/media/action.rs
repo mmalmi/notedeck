@@ -118,6 +118,7 @@ impl MediaAction {
                 let cache = match cache_type {
                     MediaCacheType::Image => &mut images.static_imgs,
                     MediaCacheType::Gif => &mut images.gifs,
+                    MediaCacheType::Blossom => &mut images.blossom,
                 };
 
                 cache.textures_cache.move_to_loaded(&url);
