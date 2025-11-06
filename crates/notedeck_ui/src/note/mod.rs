@@ -307,13 +307,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
     pub fn show(&mut self, ui: &mut egui::Ui) -> NoteResponse {
         if !self.flags.contains(NoteOptions::TrustMedia) {
             let acc = self.note_context.accounts.get_selected_account();
-            if self.note.pubkey() == acc.key.pubkey.bytes()
-                || matches!(
-                    acc.is_following(self.note.pubkey()),
-                    notedeck::IsFollowing::Yes
-                )
-            {
+            if self.note.pubkey() == acc.key.pubkey.bytes() {
                 self.flags = self.flags.union(NoteOptions::TrustMedia);
+            } else if let Some(graph) = self.note_context.social_graph {
+                let distance = graph.get_follow_distance(self.note.pubkey()).unwrap_or(1000);
+                if distance <= self.note_context.max_media_distance {
+                    self.flags = self.flags.union(NoteOptions::TrustMedia);
+                }
             }
         }
 

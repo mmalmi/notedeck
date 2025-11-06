@@ -474,17 +474,9 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
         let mut note_options = self.note_options;
 
-        // Check social graph distance to decide if we should hide media
-        if let Some(graph) = self.note_context.social_graph {
-            let distance = graph.get_follow_distance(underlying_note.pubkey()).unwrap_or(1000);
-
-            if distance > self.note_context.max_media_distance {
-                note_options = note_options.union(NoteOptions::HideMedia);
-            } else {
-                // Explicitly remove HideMedia if within distance
-                note_options = note_options.difference(NoteOptions::HideMedia);
-            }
-        }
+        // Explicitly remove HideMedia - we use TrustMedia flag for media filtering
+        // HideMedia converts to text URLs, TrustMedia controls blurred overlay
+        note_options = note_options.difference(NoteOptions::HideMedia);
 
         match entry {
             NoteUnit::Single(_) => render_note(
@@ -782,11 +774,13 @@ fn render_composite_entry(
     };
 
     if !note_options.contains(NoteOptions::TrustMedia) {
-        let acc = note_context.accounts.get_selected_account();
-        for entry in &profiles_to_show {
-            if matches!(acc.is_following(entry.pk), notedeck::IsFollowing::Yes) {
-                note_options = note_options.union(NoteOptions::TrustMedia);
-                break;
+        if let Some(graph) = note_context.social_graph {
+            for entry in &profiles_to_show {
+                let distance = graph.get_follow_distance(entry.pk).unwrap_or(1000);
+                if distance <= note_context.max_media_distance {
+                    note_options = note_options.union(NoteOptions::TrustMedia);
+                    break;
+                }
             }
         }
     }

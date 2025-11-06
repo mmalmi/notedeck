@@ -446,9 +446,11 @@ fn fetch_img_from_net(
     ehttp::fetch(request, move |response| {
         let handle = response.map_err(crate::Error::Generic).and_then(|resp| {
             // Verify blossom hash if this is a blossom URL
-            if let Some(ref hash) = expected_blossom_hash {
-                crate::verify_sha256(&resp.bytes, hash)?;
-            }
+            let hash_valid = if let Some(ref hash) = expected_blossom_hash {
+                crate::verify_sha256(&resp.bytes, hash).is_ok()
+            } else {
+                true
+            };
 
             match cache_type {
                 MediaCacheType::Image | MediaCacheType::Blossom => {
@@ -469,24 +471,26 @@ fn fetch_img_from_net(
                                 tracing::error!("Failed to write to cache: {e}");
                             }
 
-                            // If blossom URL, also write to content-addressed cache
-                            if let Some(hash) = blossom_hash {
-                                let blossom_cache_path = cache_path
-                                    .parent()
-                                    .unwrap_or(&cache_path)
-                                    .join("blossom");
-                                let blossom_key = MediaCache::blossom_key(&hash);
-                                let blossom_file_path = blossom_cache_path.join(&blossom_key);
+                            // If blossom URL and hash is valid, also write to content-addressed cache
+                            if hash_valid {
+                                if let Some(hash) = blossom_hash {
+                                    let blossom_cache_path = cache_path
+                                        .parent()
+                                        .unwrap_or(&cache_path)
+                                        .join("blossom");
+                                    let blossom_key = MediaCache::blossom_key(&hash);
+                                    let blossom_file_path = blossom_cache_path.join(&blossom_key);
 
-                                if let Some(parent) = blossom_file_path.parent() {
-                                    if let Err(e) = std::fs::create_dir_all(parent) {
-                                        tracing::error!("Failed to create blossom cache dir: {e}");
-                                        return;
+                                    if let Some(parent) = blossom_file_path.parent() {
+                                        if let Err(e) = std::fs::create_dir_all(parent) {
+                                            tracing::error!("Failed to create blossom cache dir: {e}");
+                                            return;
+                                        }
                                     }
-                                }
 
-                                if let Err(e) = MediaCache::write(&blossom_cache_path, &hash, img) {
-                                    tracing::error!("Failed to write to blossom cache: {e}");
+                                    if let Err(e) = MediaCache::write(&blossom_cache_path, &hash, img) {
+                                        tracing::error!("Failed to write to blossom cache: {e}");
+                                    }
                                 }
                             }
                         });
