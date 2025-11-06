@@ -393,6 +393,7 @@ fn handle_navigating_timeline(
     app.timeline_cache.open(ndb, note_cache, &txn, pool, &kind);
 }
 
+#[derive(Debug)]
 pub enum RouterAction {
     GoBack,
     /// We clicked on a pfp in a route. We currently don't carry any
@@ -408,6 +409,7 @@ pub enum RouterAction {
     SwitchAccount(enostr::Pubkey),
 }
 
+#[derive(Debug)]
 pub enum RouterType {
     Sheet(Split),
     Stack,
@@ -635,6 +637,7 @@ fn render_nav_body(
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
         session_manager: ctx.session_manager,
+        chat_messages: ctx.chat_messages,
     };
 
     match top {
@@ -1010,9 +1013,34 @@ fn render_nav_body(
         }
         Route::Messages => {
             let action = None;
+
+            // Auto-navigate to new chat if no chats exist
+            let has_chats = if let Some(manager) = note_context.session_manager {
+                let user_count = manager.get_user_pubkeys().len();
+                let our_pubkey = manager.get_our_pubkey();
+                let self_chat_key = notedeck::get_chat_key(&our_pubkey);
+                let has_self_messages = note_context.chat_messages
+                    .lock()
+                    .unwrap()
+                    .get(&self_chat_key)
+                    .map_or(false, |msgs| !msgs.is_empty());
+
+                user_count > 0 || has_self_messages
+            } else {
+                false
+            };
+
+            if !has_chats {
+                get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(Route::NewChat);
+                return BodyResponse::none();
+            }
+
             let scroll_resp = ScrollArea::vertical()
                 .show(ui, |ui| {
-                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache, note_context.ndb, note_context.session_manager).ui(ui)
+                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache, note_context.ndb, note_context.session_manager, note_context.chat_messages).ui(ui)
                 });
 
             match scroll_resp.inner {
@@ -1042,7 +1070,13 @@ fn render_nav_body(
             BodyResponse::scroll(scroll_with_action)
         }
         Route::NewChat => {
-            if let Some(action) = crate::ui::NewChatView::new(note_context.i18n, note_context.session_manager).ui(ui) {
+            // Set focus state for new chat input
+            let focus_id = ui.id().with("new_chat_focus_state");
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(focus_id, crate::ui::search::FocusState::ShouldRequestFocus);
+            });
+
+            if let Some(action) = crate::ui::NewChatView::new(note_context.i18n, note_context.session_manager, note_context.ndb, note_context.img_cache, note_context.accounts).ui(ui) {
                 match action {
                     crate::ui::new_chat::NewChatAction::ChatStarted(pubkey_hex) => {
                         get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
@@ -1055,7 +1089,20 @@ fn render_nav_body(
             BodyResponse::none()
         }
         Route::Chat(chat_id) => {
-            crate::ui::ChatView::new(note_context.i18n, note_context.img_cache, note_context.ndb, chat_id.clone(), note_context.session_manager)
+            // Set focus state for chat input
+            let focus_id = ui.id().with(("chat_input_focus_state", chat_id));
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(focus_id, crate::ui::search::FocusState::ShouldRequestFocus);
+            });
+
+            crate::ui::ChatView::new(
+                note_context.i18n,
+                note_context.img_cache,
+                note_context.ndb,
+                chat_id.clone(),
+                note_context.session_manager,
+                note_context.chat_messages,
+            )
                 .ui(ui);
             BodyResponse::none()
         }

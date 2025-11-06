@@ -211,6 +211,7 @@ impl<'a> DaveUi<'a> {
         call: &PresentNotesCall,
         ui: &mut egui::Ui,
     ) -> Option<NoteAction> {
+        let chat_messages_dummy = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let mut note_context = NoteContext {
             ndb: ctx.ndb,
             accounts: ctx.accounts,
@@ -224,6 +225,7 @@ impl<'a> DaveUi<'a> {
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
+            chat_messages: &chat_messages_dummy,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();

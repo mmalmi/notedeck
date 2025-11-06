@@ -23,6 +23,7 @@ pub enum AccountsViewResponse {
     SelectAccount(Pubkey),
     RemoveAccount(Pubkey),
     RouteToLogin,
+    ViewProfile(Pubkey),
 }
 
 #[derive(Debug)]
@@ -114,7 +115,12 @@ impl<'a> AccountsView<'a> {
                     if let Some(op) = profile_peview_view {
                         return_op = Some(match op {
                             ProfilePreviewAction::SwitchTo => {
-                                AccountsViewResponse::SelectAccount(*pk)
+                                if is_selected {
+                                    // Already selected - go to profile instead
+                                    AccountsViewResponse::ViewProfile(*pk)
+                                } else {
+                                    AccountsViewResponse::SelectAccount(*pk)
+                                }
                             }
                             ProfilePreviewAction::RemoveAccount => {
                                 AccountsViewResponse::RemoveAccount(*pk)

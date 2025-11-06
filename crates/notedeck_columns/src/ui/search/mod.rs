@@ -203,18 +203,22 @@ impl<'a, 'd> SearchView<'a, 'd> {
             });
         }
 
-        if keyboard_resp.enter_pressed && self.query.selected_index > 0 {
-            let user_idx = (self.query.selected_index - 1) as usize;
-            if let Some(pk_bytes) = self.query.user_results.get(user_idx) {
-                if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
-                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
-                }
-            }
-        }
-
         if !self.query.user_results.is_empty() {
             ui.add_space(8.0);
 
+            // Adjust selected index for dropdown (subtract 1 since "Search posts" is index 0)
+            let mut dropdown_index = self.query.selected_index - 1;
+
+            let our_pubkey = self.note_context.accounts.selected_account_pubkey();
+            let mut dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(
+                self.note_context.ndb,
+                self.note_context.img_cache,
+                our_pubkey,
+                self.note_context.accounts,
+            );
+
+            // Convert user_results to query string format for dropdown
+            // For now, use the existing user_results directly with UserRow
             for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
                 let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
                     continue;
@@ -226,6 +230,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
                     .with_accounts(self.note_context.accounts)
                     .with_selection(is_selected)).clicked() {
+                    return Some(SearchAction::NavigateToProfile(pubkey));
+                }
+
+                // Handle enter on selected user
+                if keyboard_resp.enter_pressed && is_selected {
                     return Some(SearchAction::NavigateToProfile(pubkey));
                 }
             }

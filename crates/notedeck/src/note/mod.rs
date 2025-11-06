@@ -33,6 +33,7 @@ pub struct NoteContext<'d> {
     pub unknown_ids: &'d mut UnknownIds,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
     pub session_manager: &'d Option<Arc<SessionManager>>,
+    pub chat_messages: &'d crate::ChatMessages,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]

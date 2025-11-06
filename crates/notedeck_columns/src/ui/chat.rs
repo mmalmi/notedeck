@@ -1,9 +1,9 @@
 use egui::{RichText, ScrollArea, Vec2};
-use notedeck::{tr, Localization};
+use notedeck::{tr, Localization, get_chat_key, ChatMessages};
 use notedeck_ui::ProfilePic;
+use nostrdb::{Ndb, Transaction};
 use nostr_double_ratchet::SessionManager;
 use std::sync::Arc;
-use nostrdb::{Ndb, Transaction};
 
 pub struct ChatView<'a> {
     i18n: &'a mut Localization,
@@ -11,6 +11,7 @@ pub struct ChatView<'a> {
     ndb: &'a Ndb,
     chat_id: String,
     session_manager: &'a Option<Arc<SessionManager>>,
+    chat_messages: &'a ChatMessages,
 }
 
 impl<'a> ChatView<'a> {
@@ -20,6 +21,7 @@ impl<'a> ChatView<'a> {
         ndb: &'a Ndb,
         chat_id: String,
         session_manager: &'a Option<Arc<SessionManager>>,
+        chat_messages: &'a ChatMessages,
     ) -> Self {
         Self {
             i18n,
@@ -27,6 +29,7 @@ impl<'a> ChatView<'a> {
             ndb,
             chat_id,
             session_manager,
+            chat_messages,
         }
     }
 
@@ -49,15 +52,61 @@ impl<'a> ChatView<'a> {
                             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.add_space(8.0);
 
-                                // TODO: get actual messages from SessionManager
-                                // For now, show empty state
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("No messages yet")
-                                            .size(14.0)
-                                            .color(ui.visuals().weak_text_color()),
-                                    );
-                                });
+                                // Get messages for this chat
+                                let chat_pk = hex::decode(&self.chat_id)
+                                    .ok()
+                                    .and_then(|bytes| {
+                                        if bytes.len() == 32 {
+                                            let mut arr = [0u8; 32];
+                                            arr.copy_from_slice(&bytes);
+                                            Some(enostr::Pubkey::new(arr))
+                                        } else {
+                                            None
+                                        }
+                                    });
+
+                                if let Some(pk) = chat_pk {
+                                    let chat_key = get_chat_key(&pk);
+                                    let messages = self.chat_messages
+                                        .lock()
+                                        .unwrap()
+                                        .get(&chat_key)
+                                        .cloned()
+                                        .unwrap_or_default();
+
+                                    if messages.is_empty() {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("No messages yet")
+                                                    .size(14.0)
+                                                    .color(ui.visuals().weak_text_color()),
+                                            );
+                                        });
+                                    } else {
+                                        let our_pubkey = self.session_manager.as_ref().map(|m| m.get_our_pubkey());
+                                        for msg in &messages {
+                                            let is_sent = our_pubkey.map_or(false, |our_pk| msg.sender == our_pk);
+
+                                            // Try to parse as JSON rumor first, fallback to plain text
+                                            let content = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+                                                parsed["content"].as_str().unwrap_or(&msg.content).to_string()
+                                            } else {
+                                                msg.content.clone()
+                                            };
+
+                                            self.render_message(ui, &content, is_sent);
+                                            ui.add_space(8.0);
+                                        }
+                                    }
+                                } else {
+                                    ui.centered_and_justified(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Invalid chat ID")
+                                                .size(14.0)
+                                                .color(ui.visuals().weak_text_color()),
+                                        );
+                                    });
+                                }
                             });
                         });
                 },
@@ -117,6 +166,52 @@ impl<'a> ChatView<'a> {
         ui.add_space(8.0);
     }
 
+    fn render_message(&mut self, ui: &mut egui::Ui, content: &str, is_sent: bool) {
+        let margin = 16.0;
+        let max_width = (ui.available_width() - margin * 2.0) * 0.7;
+
+        if is_sent {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    ui.add_space(margin);
+                    self.render_message_bubble(ui, content, max_width, true);
+                });
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.add_space(margin);
+                self.render_message_bubble(ui, content, max_width, false);
+                ui.add_space(margin);
+            });
+        }
+    }
+
+    fn render_message_bubble(&self, ui: &mut egui::Ui, content: &str, max_width: f32, is_sent: bool) {
+        let bg_color = if is_sent {
+            egui::Color32::from_rgb(88, 86, 214)
+        } else {
+            if ui.visuals().dark_mode {
+                egui::Color32::from_rgb(40, 40, 45)
+            } else {
+                egui::Color32::from_rgb(240, 240, 245)
+            }
+        };
+
+        let text_color = if is_sent {
+            egui::Color32::WHITE
+        } else {
+            ui.visuals().text_color()
+        };
+
+        egui::Frame::new()
+            .fill(bg_color)
+            .corner_radius(12.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.set_max_width(max_width);
+                ui.label(RichText::new(content).size(14.0).color(text_color));
+            });
+    }
 
     fn render_input(&mut self, ui: &mut egui::Ui) {
         let margin = 16;
@@ -151,6 +246,12 @@ impl<'a> ChatView<'a> {
                         bottom: 10,
                     });
 
+                let focus_id = ui.id().with(("chat_input_focus_state", &self.chat_id));
+                let mut focus_state = ui.ctx().data(|d| {
+                    d.get_temp::<crate::ui::search::FocusState>(focus_id)
+                        .unwrap_or(crate::ui::search::FocusState::ShouldRequestFocus)
+                });
+
                 let text_resp = input_frame.show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut input_text)
@@ -163,6 +264,15 @@ impl<'a> ChatView<'a> {
                             .frame(false)
                     )
                 }).inner;
+
+                if focus_state == crate::ui::search::FocusState::ShouldRequestFocus {
+                    text_resp.request_focus();
+                    focus_state = crate::ui::search::FocusState::RequestedFocus;
+                } else if focus_state == crate::ui::search::FocusState::RequestedFocus {
+                    focus_state = crate::ui::search::FocusState::Navigating;
+                }
+
+                ui.ctx().data_mut(|d| d.insert_temp(focus_id, focus_state));
 
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(input_id, input_text.clone());
@@ -219,16 +329,40 @@ impl<'a> ChatView<'a> {
                                 let mut bytes = [0u8; 32];
                                 bytes.copy_from_slice(&pubkey_bytes);
                                 let recipient = enostr::Pubkey::new(bytes);
+
+                                // Optimistically store the message locally
+                                let our_pubkey = manager.get_our_pubkey();
+                                let chat_key = get_chat_key(&recipient);
+                                let msg = notedeck::ChatMessage {
+                                    sender: our_pubkey,
+                                    content: input_text.clone(),
+                                    timestamp: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs(),
+                                    event_id: None,
+                                };
+
+                                self.chat_messages
+                                    .lock()
+                                    .unwrap()
+                                    .entry(chat_key)
+                                    .or_insert_with(Vec::new)
+                                    .push(msg);
+
                                 match manager.send_text(recipient, input_text.clone()) {
                                     Ok(event_ids) => {
                                         if event_ids.is_empty() {
-                                            tracing::warn!("No active sessions with {}. Waiting for handshake.", &self.chat_id);
+                                            tracing::warn!("No active sessions with {}. Message queued for when session establishes.", &self.chat_id);
                                         } else {
                                             tracing::info!("Sent {} messages to {}", event_ids.len(), &self.chat_id);
-                                            ui.ctx().data_mut(|d| {
-                                                d.insert_temp(input_id, String::new());
-                                            });
                                         }
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(input_id, String::new());
+                                        });
+                                        // Keep focus in input after send
+                                        let focus_id = ui.id().with(("chat_input_focus_state", &self.chat_id));
+                                        ui.ctx().data_mut(|d| d.insert_temp(focus_id, crate::ui::search::FocusState::ShouldRequestFocus));
                                     }
                                     Err(e) => {
                                         tracing::error!("Failed to send message: {}", e);

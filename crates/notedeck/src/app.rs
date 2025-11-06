@@ -13,17 +13,31 @@ use crate::{
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::RelayPool;
+use enostr::{RelayPool, Pubkey};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 use nostr_double_ratchet::{SessionManager, DebouncedFileStorage, SessionManagerEvent};
 use crossbeam_channel::Receiver;
+
+#[derive(Clone, Debug)]
+pub struct ChatMessage {
+    pub sender: Pubkey,
+    pub content: String,
+    pub timestamp: u64,
+    pub event_id: Option<String>,
+}
+
+pub type ChatMessages = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
+
+pub fn get_chat_key(user_pk: &Pubkey) -> String {
+    hex::encode(user_pk.bytes())
+}
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
@@ -85,6 +99,7 @@ pub struct Notedeck {
     session_manager: Option<Arc<SessionManager>>,
     session_event_rx: Option<Receiver<SessionManagerEvent>>,
     session_event_tx: Option<crossbeam_channel::Sender<SessionManagerEvent>>,
+    chat_messages: ChatMessages,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -170,7 +185,25 @@ impl eframe::App for Notedeck {
                         SessionManagerEvent::DecryptedMessage { sender, content, event_id } => {
                             info!("Decrypted message from {}: {} (event_id: {:?})",
                                 hex::encode(sender.bytes()), content, event_id);
-                            // TODO: Store/display decrypted message in chat UI
+
+                            // Store message in chat_messages
+                            let chat_key = get_chat_key(&sender);
+                            let msg = ChatMessage {
+                                sender,
+                                content,
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs(),
+                                event_id,
+                            };
+
+                            self.chat_messages
+                                .lock()
+                                .unwrap()
+                                .entry(chat_key)
+                                .or_insert_with(Vec::new)
+                                .push(msg);
                         }
                     }
                 }
@@ -362,6 +395,7 @@ impl Notedeck {
             session_manager,
             session_event_rx: Some(session_event_rx),
             session_event_tx: Some(session_event_tx),
+            chat_messages: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -490,6 +524,7 @@ impl Notedeck {
             i18n: &mut self.i18n,
             session_manager: &self.session_manager,
             session_event_tx: &self.session_event_tx,
+            chat_messages: &self.chat_messages,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

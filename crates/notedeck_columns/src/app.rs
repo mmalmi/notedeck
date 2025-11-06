@@ -30,8 +30,23 @@ use notedeck_ui::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+#[derive(Clone, Debug)]
+pub struct ChatMessage {
+    pub sender: enostr::Pubkey,
+    pub content: String,
+    pub timestamp: u64,
+    pub event_id: Option<String>,
+}
+
+type ChatMessages = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
+
+fn get_chat_key(user_pk: &enostr::Pubkey) -> String {
+    hex::encode(user_pk.bytes())
+}
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -51,6 +66,7 @@ pub struct Damus {
     pub support: Support,
     pub jobs: JobsCache,
     pub threads: Threads,
+    pub chat_messages: ChatMessages,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -582,6 +598,7 @@ impl Damus {
             threads,
             onboarding: Onboarding::default(),
             hovered_column: None,
+            chat_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -605,6 +622,16 @@ impl Damus {
         } else {
             Uuid::new_v4().to_string()
         }
+    }
+
+    pub fn get_chat_messages(&self, user_pk: &enostr::Pubkey) -> Vec<ChatMessage> {
+        let chat_key = get_chat_key(user_pk);
+        self.chat_messages
+            .lock()
+            .unwrap()
+            .get(&chat_key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
@@ -634,6 +661,7 @@ impl Damus {
             threads: Threads::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
+            chat_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

@@ -9,6 +9,7 @@ pub struct MessagesView<'a> {
     img_cache: &'a mut notedeck::Images,
     ndb: &'a Ndb,
     session_manager: &'a Option<Arc<SessionManager>>,
+    chat_messages: &'a notedeck::ChatMessages,
 }
 
 impl<'a> MessagesView<'a> {
@@ -17,11 +18,13 @@ impl<'a> MessagesView<'a> {
         img_cache: &'a mut notedeck::Images,
         ndb: &'a Ndb,
         session_manager: &'a Option<Arc<SessionManager>>,
+        chat_messages: &'a notedeck::ChatMessages,
     ) -> Self {
         Self {
             img_cache,
             ndb,
             session_manager,
+            chat_messages,
         }
     }
 
@@ -43,7 +46,22 @@ impl<'a> MessagesView<'a> {
                 return None;
             };
 
-            manager.get_user_pubkeys()
+            let mut user_pubkeys = manager.get_user_pubkeys();
+            let our_pubkey = manager.get_our_pubkey();
+
+            // Include self only if there are messages with self
+            let self_chat_key = notedeck::get_chat_key(&our_pubkey);
+            let has_self_messages = self.chat_messages
+                .lock()
+                .unwrap()
+                .get(&self_chat_key)
+                .map_or(false, |msgs| !msgs.is_empty());
+
+            if has_self_messages && !user_pubkeys.contains(&our_pubkey) {
+                user_pubkeys.push(our_pubkey);
+            }
+
+            user_pubkeys
                 .iter()
                 .map(|pubkey| {
                     let pubkey_hex = hex::encode(pubkey.bytes());

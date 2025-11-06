@@ -9,6 +9,7 @@ pub mod images;
 pub mod mentions_picker;
 pub mod messages;
 pub mod new_chat;
+pub mod profile_search_dropdown;
 pub mod note;
 pub mod onboarding;
 pub mod post;

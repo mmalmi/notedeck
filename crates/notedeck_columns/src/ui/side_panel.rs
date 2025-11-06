@@ -420,8 +420,9 @@ impl<'a> DesktopSidePanel<'a> {
                 }
             }
             SidePanelAction::Accounts => {
-                if router.routes().iter().any(|r| matches!(r, Route::Accounts(_))) {
-                    router.go_back();
+                if matches!(router.top(), Route::Accounts(_)) {
+                    // Already on accounts page - go to profile instead
+                    router.route_to(Route::profile(*accounts.selected_account_pubkey()));
                 } else {
                     router.route_to(Route::accounts());
                 }

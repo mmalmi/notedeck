@@ -876,6 +876,7 @@ mod preview {
     impl App for PostPreview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             let txn = Transaction::new(app.ndb).expect("txn");
+            let chat_messages_dummy = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
             let mut note_context = NoteContext {
                 ndb: app.ndb,
                 accounts: app.accounts,
@@ -889,6 +890,7 @@ mod preview {
                 clipboard: app.clipboard,
                 i18n: app.i18n,
                 session_manager: &None,
+                chat_messages: &chat_messages_dummy,
             };
 
             PostView::new(

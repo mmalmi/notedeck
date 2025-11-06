@@ -42,6 +42,7 @@ pub fn note_hover_ui(
             .ok();
 
         // TODO(jb55): make this less horrible
+        let chat_messages_dummy = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let mut note_context = notedeck::NoteContext {
             ndb: ctx.ndb,
             accounts: ctx.accounts,
@@ -55,6 +56,7 @@ pub fn note_hover_ui(
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
+            chat_messages: &chat_messages_dummy,
         };
 
         let mut jobs = notedeck::JobsCache::default();

@@ -33,6 +33,7 @@ pub struct AppContext<'a> {
     pub i18n: &'a mut Localization,
     pub session_manager: &'a Option<Arc<SessionManager>>,
     pub session_event_tx: &'a Option<crossbeam_channel::Sender<SessionManagerEvent>>,
+    pub chat_messages: &'a crate::app::ChatMessages,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

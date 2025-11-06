@@ -144,6 +144,9 @@ pub fn process_accounts_view_response(
             info!("account selection: {:?}", acc_sel);
             action = Some(acc_sel);
         }
+        AccountsViewResponse::ViewProfile(pk) => {
+            router.route_to(Route::profile(pk));
+        }
         AccountsViewResponse::RouteToLogin => {
             router.route_to(Route::add_account());
         }
