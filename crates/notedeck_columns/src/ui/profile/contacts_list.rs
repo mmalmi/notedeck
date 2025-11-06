@@ -46,8 +46,7 @@ impl<'a, 'd, 'txn> ContactsListView<'a, 'd, 'txn> {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     if ui.add(UserRow::new(profile.as_ref(), contact_pubkey, self.note_context.img_cache, available_width)
-                        .with_accounts(self.note_context.accounts)
-                        .with_social_graph(self.note_context.social_graph)).clicked() {
+                        .with_accounts(self.note_context.accounts)).clicked() {
                         action = Some(ContactsListAction::OpenProfile(*contact_pubkey));
                     }
                     ui.add_space(8.0);

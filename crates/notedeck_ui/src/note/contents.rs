@@ -112,7 +112,7 @@ pub fn render_note_preview(
             */
     };
 
-    NoteView::new(note_context, &note, note_options, jobs)
+    NoteView::new(note_context, &note, note_options, jobs, txn)
         .preview_style()
         .parent(parent)
         .show(ui)

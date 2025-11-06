@@ -249,52 +249,6 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     pool.send(&msg);
 }
 
-fn subscribe_to_wot_contact_lists(
-    subscriptions: &mut Subscriptions,
-    pool: &mut RelayPool,
-    graph: &std::sync::Arc<nostr_social_graph::SocialGraph>,
-) {
-    let mut authors = Vec::new();
-
-    for distance in 0..=2 {
-        if let Ok(users) = graph.get_users_by_follow_distance(distance) {
-            for user_hex in users {
-                if user_hex.len() == 64 {
-                    if let Ok(pk_bytes) = hex::decode(&user_hex) {
-                        if pk_bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&pk_bytes);
-                            authors.push(arr);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if authors.is_empty() {
-        return;
-    }
-
-    info!("Subscribing to contact lists for {} users (batched)", authors.len());
-
-    const BATCH_SIZE: usize = 500;
-    let total_batches = (authors.len() + BATCH_SIZE - 1) / BATCH_SIZE;
-
-    for (batch_idx, chunk) in authors.chunks(BATCH_SIZE).enumerate() {
-        let filter = enostr::Filter::new()
-            .kinds([3, 10000])
-            .authors(chunk)
-            .build();
-
-        let subid = new_sub_id();
-        subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
-        let msg = ClientMessage::req(subid, vec![filter]);
-        pool.send(&msg);
-
-        info!("Subscribed batch {}/{} ({} authors)", batch_idx + 1, total_batches, chunk.len());
-    }
-}
 
 #[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
@@ -320,11 +274,6 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 app_ctx.unknown_ids,
             ) {
                 warn!("update_damus init: {err}");
-            }
-
-            // Subscribe to WoT contact lists
-            if let Some(graph) = app_ctx.social_graph {
-                subscribe_to_wot_contact_lists(&mut damus.subscriptions, app_ctx.pool, graph);
             }
         }
 
@@ -448,39 +397,7 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                             }
                         }
 
-                        // Update social graph for contact/mute lists
-                        if (kind == 3 || kind == 10000) && ctx.social_graph.is_some() {
-                            if let Some(graph) = ctx.social_graph {
-                                let pubkey = note.pubkey();
-                                let created_at = note.created_at();
-
-                                let mut p_tags = Vec::new();
-                                for tag in note.tags().iter() {
-                                    if tag.count() >= 2 {
-                                        if let Some("p") = tag.get_str(0) {
-                                            if let Some(pk_bytes) = tag.get_id(1) {
-                                                p_tags.push(*pk_bytes);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                let result = if kind == 3 {
-                                    graph.handle_contact_list(pubkey, &p_tags, created_at)
-                                } else {
-                                    graph.handle_mute_list(pubkey, &p_tags, created_at)
-                                };
-
-                                if let Err(e) = result {
-                                    debug!("Error updating social graph: {:?}", e);
-                                } else if kind == 3 {
-                                    // Recalculate distances after new contact list
-                                    if let Err(e) = graph.recalculate_follow_distances() {
-                                        debug!("Error recalculating distances: {:?}", e);
-                                    }
-                                }
-                            }
-                        }
+                        // Contact/mute lists now handled automatically by nostrdb
                     }
                 }
             }
@@ -869,9 +786,6 @@ fn render_damus_mobile(
                                     app_ctx.pool,
                                     ui.ctx(),
                                 );
-                                if let Some(graph) = app_ctx.social_graph {
-                                    app_ctx.accounts.update_social_graph_root(graph);
-                                }
                             }
                         }
                     }
@@ -1126,35 +1040,32 @@ fn timelines_view(
 
     if app_action.is_none() {
         for response in responses {
-        let nav_result = response.process_render_nav_response(app, ctx, ui);
+            let nav_result = response.process_render_nav_response(app, ctx, ui);
 
-        if let Some(nr) = &nav_result {
-            match nr {
-                ProcessNavResult::SwitchOccurred => save_cols = true,
+            if let Some(nr) = &nav_result {
+                match nr {
+                    ProcessNavResult::SwitchOccurred => save_cols = true,
 
-                ProcessNavResult::PfpClicked => {
-                    app_action = Some(AppAction::ToggleChrome);
-                }
+                    ProcessNavResult::PfpClicked => {
+                        app_action = Some(AppAction::ToggleChrome);
+                    }
 
-                ProcessNavResult::SwitchAccount(pubkey) => {
-                    // Add as pubkey-only account if not already present
-                    let kp = enostr::Keypair::only_pubkey(*pubkey);
-                    let _ = ctx.accounts.add_account(kp);
+                    ProcessNavResult::SwitchAccount(pubkey) => {
+                        // Add as pubkey-only account if not already present
+                        let kp = enostr::Keypair::only_pubkey(*pubkey);
+                        let _ = ctx.accounts.add_account(kp);
 
-                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-                    ctx.accounts.select_account(
-                        pubkey,
-                        ctx.ndb,
-                        &txn,
-                        ctx.pool,
-                        ui.ctx(),
-                    );
-                    if let Some(graph) = ctx.social_graph {
-                        ctx.accounts.update_social_graph_root(graph);
+                        let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                        ctx.accounts.select_account(
+                            pubkey,
+                            ctx.ndb,
+                            &txn,
+                            ctx.pool,
+                            ui.ctx(),
+                        );
                     }
                 }
             }
-        }
         }
     }
 

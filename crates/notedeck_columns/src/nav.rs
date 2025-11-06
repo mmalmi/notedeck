@@ -39,8 +39,8 @@ use egui_nav::{
 use enostr::{ClientMessage, ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
-    get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteCache, NoteContext,
-    RelayAction,
+    get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteCache,
+    NoteContext, RelayAction,
 };
 use notedeck_ui::NoteOptions;
 use tracing::{error, info};
@@ -105,10 +105,6 @@ impl SwitchingAction {
                             ctx.pool,
                             ui_ctx,
                         );
-                        if let Some(graph) = ctx.social_graph {
-                            ctx.accounts.update_social_graph_root(graph);
-                        }
-
 
                         let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
                         // this is cringe but we're gonna get a new sub manager soon...
@@ -308,7 +304,14 @@ fn process_nav_resp(
 
             NavAction::Navigated => {
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
-                handle_navigating_timeline(ctx.ndb, ctx.note_cache, ctx.pool, ctx.accounts, app, col);
+                handle_navigating_timeline(
+                    ctx.ndb,
+                    ctx.note_cache,
+                    ctx.pool,
+                    ctx.accounts,
+                    app,
+                    col,
+                );
 
                 let cur_router = app
                     .columns_mut(ctx.i18n, ctx.accounts)
@@ -327,85 +330,19 @@ fn process_nav_resp(
             NavAction::Resetting => {}
             NavAction::Navigating => {
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
-                handle_navigating_timeline(ctx.ndb, ctx.note_cache, ctx.pool, ctx.accounts, app, col);
+                handle_navigating_timeline(
+                    ctx.ndb,
+                    ctx.note_cache,
+                    ctx.pool,
+                    ctx.accounts,
+                    app,
+                    col,
+                );
             }
         }
     }
 
     process_result
-}
-
-/// We are navigating to edit profile, prepare the profile state
-/// if we don't have it
-fn crawl_social_graph(
-    app: &mut Damus,
-    ctx: &mut AppContext,
-    max_distance: u32,
-    query_relays: bool,
-) {
-    let Some(graph) = ctx.social_graph else {
-        return;
-    };
-
-    if query_relays {
-        let txn = Transaction::new(ctx.ndb).expect("txn");
-        match graph.get_users_missing_contact_lists(max_distance, ctx.ndb, &txn) {
-            Ok(missing) => {
-                if missing.is_empty() {
-                    info!("No missing contact lists for distance 0-{}", max_distance);
-                    return;
-                }
-
-                info!("Fetching {} missing contact lists from relays (batched)", missing.len());
-
-                let mut authors = Vec::new();
-                for user_hex in missing {
-                    if let Ok(pk_bytes) = hex::decode(&user_hex) {
-                        if pk_bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&pk_bytes);
-                            authors.push(arr);
-                        }
-                    }
-                }
-
-                if authors.is_empty() {
-                    return;
-                }
-
-                const BATCH_SIZE: usize = 500;
-                let total_batches = (authors.len() + BATCH_SIZE - 1) / BATCH_SIZE;
-
-                for (batch_idx, chunk) in authors.chunks(BATCH_SIZE).enumerate() {
-                    let filter = enostr::Filter::new()
-                        .kinds([3, 10000])
-                        .authors(chunk)
-                        .build();
-
-                    let subid = new_sub_id();
-                    app.subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
-                    let msg = ClientMessage::req(subid, vec![filter]);
-                    ctx.pool.send(&msg);
-
-                    info!("Sent batch {}/{} ({} authors)", batch_idx + 1, total_batches, chunk.len());
-                }
-
-                info!("Queued {} batches of contact list requests", total_batches);
-            }
-            Err(e) => {
-                error!("Error getting missing contact lists: {:?}", e);
-            }
-        }
-    } else {
-        info!("Crawling social graph from local DB to distance {}", max_distance);
-        let txn = Transaction::new(ctx.ndb).expect("txn");
-        if let Err(e) = graph.populate_from_ndb(ctx.ndb, &txn) {
-            error!("Error crawling from local DB: {:?}", e);
-        } else {
-            let (users, follows, mutes) = graph.size();
-            info!("Social graph updated: {} users, {} follows, {} mutes", users, follows, mutes);
-        }
-    }
 }
 
 fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damus, col: usize) {
@@ -548,9 +485,7 @@ impl RouterAction {
                 sheet_router.after_action = Some(route);
                 None
             }
-            RouterAction::SwitchAccount(pubkey) => {
-                Some(ProcessNavResult::SwitchAccount(pubkey))
-            }
+            RouterAction::SwitchAccount(pubkey) => Some(ProcessNavResult::SwitchAccount(pubkey)),
         }
     }
 
@@ -640,31 +575,23 @@ fn process_render_nav_action(
             None
         }
         RenderNavAction::SettingsAction(action) => {
-            match &action {
-                SettingsAction::CrawlSocialGraph { max_distance, query_relays } => {
-                    crawl_social_graph(app, ctx, *max_distance, *query_relays);
-                    None
-                }
-                _ => action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
-            }
-        }
+            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+        },
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
-        RenderNavAction::ShowFollowing(pubkey) => {
-            Some(RouterAction::RouteTo(
-                crate::route::Route::Following(pubkey),
-                RouterType::Stack,
-            ))
-        }
-        RenderNavAction::ShowFollowers(pubkey) => {
-            Some(RouterAction::RouteTo(
-                crate::route::Route::FollowedBy(pubkey),
-                RouterType::Stack,
-            ))
-        }
+        RenderNavAction::ShowFollowing(pubkey) => Some(RouterAction::RouteTo(
+            crate::route::Route::Following(pubkey),
+            RouterType::Stack,
+        )),
+        RenderNavAction::ShowFollowers(pubkey) => Some(RouterAction::RouteTo(
+            crate::route::Route::FollowedBy(pubkey),
+            RouterType::Stack,
+        )),
         RenderNavAction::ScrollToTop => {
-            app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col).request_scroll_to_top();
+            app.columns_mut(ctx.i18n, ctx.accounts)
+                .column_mut(col)
+                .request_scroll_to_top();
             None
         }
     };
@@ -719,7 +646,6 @@ fn render_nav_body(
         global_wallet: ctx.global_wallet,
         session_manager: ctx.session_manager,
         chat_messages: ctx.chat_messages,
-        social_graph: ctx.social_graph.as_ref(),
         max_media_distance: ctx.settings.max_media_distance(),
     };
 
@@ -745,17 +671,15 @@ fn render_nav_body(
 
             resp
         }
-        Route::Thread(selection) => {
-            render_thread_route(
-                &mut app.threads,
-                selection,
-                col,
-                app.note_options,
-                ui,
-                &mut note_context,
-                &mut app.jobs,
-            )
-        }
+        Route::Thread(selection) => render_thread_route(
+            &mut app.threads,
+            selection,
+            col,
+            app.note_options,
+            ui,
+            &mut note_context,
+            &mut app.jobs,
+        ),
         Route::Accounts(amr) => {
             let resp = render_accounts_route(
                 ui,
@@ -836,6 +760,7 @@ fn render_nav_body(
                     inner_rect,
                     options,
                     &mut app.jobs,
+                    &txn,
                     col,
                 )
                 .show(ui)
@@ -1037,9 +962,9 @@ fn render_nav_body(
         Route::Following(pubkey) => {
             let cache_id = egui::Id::new(("following_contacts_cache", pubkey));
 
-            let contacts = ui.ctx().data_mut(|d| {
-                d.get_temp::<Vec<enostr::Pubkey>>(cache_id)
-            });
+            let contacts = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<Vec<enostr::Pubkey>>(cache_id));
 
             let (txn, contacts) = if let Some(cached) = contacts {
                 let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
@@ -1079,7 +1004,8 @@ fn render_nav_body(
                         .unwrap_or_else(|| "zzz".to_string())
                 });
 
-                ui.ctx().data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
                 (txn, contacts)
             };
 
@@ -1094,26 +1020,26 @@ fn render_nav_body(
         Route::FollowedBy(pubkey) => {
             let cache_id = egui::Id::new(("followers_contacts_cache", pubkey));
 
-            let contacts = ui.ctx().data_mut(|d| {
-                d.get_temp::<Vec<enostr::Pubkey>>(cache_id)
-            });
+            let contacts = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<Vec<enostr::Pubkey>>(cache_id));
 
             let (txn, contacts) = if let Some(cached) = contacts {
                 let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
                 (txn, cached)
             } else {
                 let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-                let mut contacts = vec![];
 
-                if let Some(graph) = note_context.social_graph {
-                    if let Ok(followers) = graph.get_followers_by_user(pubkey.bytes()) {
-                        for follower_bytes in followers {
-                            contacts.push(enostr::Pubkey::new(follower_bytes));
-                        }
-                    }
-                }
+                let mut pk_bytes = [0u8; 32];
+                pk_bytes.copy_from_slice(pubkey.bytes());
+                let follower_pks = nostrdb::socialgraph::get_followers(&txn, ctx.ndb, &pk_bytes, 1000);
 
-                contacts.sort_by_cached_key(|pk| {
+                let mut contacts: Vec<enostr::Pubkey> = follower_pks
+                    .iter()
+                    .map(|bytes| enostr::Pubkey::new(*bytes))
+                    .collect();
+
+                contacts.sort_by_cached_key(|pk: &enostr::Pubkey| {
                     ctx.ndb
                         .get_profile_by_pubkey(&txn, pk.bytes())
                         .ok()
@@ -1125,7 +1051,8 @@ fn render_nav_body(
                         .unwrap_or_else(|| "zzz".to_string())
                 });
 
-                ui.ctx().data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
                 (txn, contacts)
             };
 
@@ -1145,7 +1072,8 @@ fn render_nav_body(
                 let user_count = manager.get_user_pubkeys().len();
                 let our_pubkey = manager.get_our_pubkey();
                 let self_chat_key = notedeck::get_chat_key(&our_pubkey);
-                let has_self_messages = note_context.chat_messages
+                let has_self_messages = note_context
+                    .chat_messages
                     .lock()
                     .unwrap()
                     .get(&self_chat_key)
@@ -1164,10 +1092,16 @@ fn render_nav_body(
                 return BodyResponse::none();
             }
 
-            let scroll_resp = ScrollArea::vertical()
-                .show(ui, |ui| {
-                    crate::ui::MessagesView::new(note_context.i18n, note_context.img_cache, note_context.ndb, note_context.session_manager, note_context.chat_messages).ui(ui)
-                });
+            let scroll_resp = ScrollArea::vertical().show(ui, |ui| {
+                crate::ui::MessagesView::new(
+                    note_context.i18n,
+                    note_context.img_cache,
+                    note_context.ndb,
+                    note_context.session_manager,
+                    note_context.chat_messages,
+                )
+                .ui(ui)
+            });
 
             match scroll_resp.inner {
                 Some(crate::ui::messages::MessageAction::OpenConversation(chat_id)) => {
@@ -1202,13 +1136,25 @@ fn render_nav_body(
                 d.insert_temp(focus_id, crate::ui::search::FocusState::ShouldRequestFocus);
             });
 
-            if let Some(action) = crate::ui::NewChatView::new(note_context.i18n, note_context.session_manager, note_context.ndb, note_context.img_cache, note_context.accounts).ui(ui) {
+            if let Some(action) = crate::ui::NewChatView::new(
+                note_context.i18n,
+                note_context.session_manager,
+                note_context.ndb,
+                note_context.img_cache,
+                note_context.accounts,
+            )
+            .ui(ui)
+            {
                 match action {
                     crate::ui::new_chat::NewChatAction::ChatStarted(pubkey_hex) => {
-                        get_active_columns_mut(note_context.i18n, ctx.accounts, &mut app.decks_cache)
-                            .column_mut(col)
-                            .router_mut()
-                            .route_to(Route::Chat(pubkey_hex));
+                        get_active_columns_mut(
+                            note_context.i18n,
+                            ctx.accounts,
+                            &mut app.decks_cache,
+                        )
+                        .column_mut(col)
+                        .router_mut()
+                        .route_to(Route::Chat(pubkey_hex));
                     }
                 }
             }
@@ -1229,7 +1175,7 @@ fn render_nav_body(
                 note_context.session_manager,
                 note_context.chat_messages,
             )
-                .ui(ui);
+            .ui(ui);
             BodyResponse::none()
         }
         Route::Wallet(wallet_type) => {

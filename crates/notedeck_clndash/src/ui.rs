@@ -57,7 +57,6 @@ pub fn note_hover_ui(
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
             chat_messages: &chat_messages_dummy,
-            social_graph: ctx.social_graph.as_ref(),
             max_media_distance: 3,
         };
 
@@ -70,7 +69,7 @@ pub fn note_hover_ui(
         let nostr_name = notedeck::name::get_display_name(author.as_ref());
         ui.label(format!("{} zapped you", nostr_name.name()));
 
-        return notedeck_ui::NoteView::new(&mut note_context, &note, options, &mut jobs)
+        return notedeck_ui::NoteView::new(&mut note_context, &note, options, &mut jobs, &txn)
             .preview_style()
             .hide_media(true)
             .show(ui)

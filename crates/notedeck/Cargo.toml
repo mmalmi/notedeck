@@ -15,7 +15,6 @@ dirs = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
 nostr-double-ratchet = { path = "../nostr-double-ratchet" }
-nostr-social-graph = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }

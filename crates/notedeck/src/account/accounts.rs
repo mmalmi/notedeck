@@ -258,16 +258,11 @@ impl Accounts {
             &self.cache.selected().data,
             create_wakeup(ctx),
         );
-    }
 
-    pub fn update_social_graph_root(&self, social_graph: &std::sync::Arc<nostr_social_graph::SocialGraph>) {
-        let selected = self.get_selected_account();
-        let root_pubkey = selected.key.pubkey.bytes();
-        if let Err(e) = social_graph.set_root(root_pubkey) {
-            tracing::error!("Failed to update social graph root: {}", e);
-        } else {
-            tracing::info!("Social graph root updated to {}", hex::encode(root_pubkey));
-        }
+        // Update social graph root to selected account
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(pk_to_select.bytes());
+        nostrdb::socialgraph::set_root(ndb, &pk_bytes);
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {

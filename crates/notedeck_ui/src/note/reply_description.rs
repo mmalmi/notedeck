@@ -163,7 +163,7 @@ fn render_text_segments(
                     if r.hovered() {
                         r.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(400.0);
-                            NoteView::new(note_context, &note, note_options, jobs)
+                            NoteView::new(note_context, &note, note_options, jobs, txn)
                                 .actionbar(false)
                                 .wide(true)
                                 .show(ui);
@@ -197,7 +197,7 @@ fn render_text_segments(
                     if r.hovered() {
                         r.on_hover_ui_at_pointer(|ui| {
                             ui.set_max_width(400.0);
-                            NoteView::new(note_context, &note, note_options, jobs)
+                            NoteView::new(note_context, &note, note_options, jobs, txn)
                                 .actionbar(false)
                                 .wide(true)
                                 .show(ui);

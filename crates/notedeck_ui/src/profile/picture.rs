@@ -1,5 +1,6 @@
 use egui::{vec2, InnerResponse, Sense, Stroke, TextureHandle};
 use enostr::Pubkey;
+use nostrdb::{Ndb, Transaction};
 
 use notedeck::get_render_state;
 use notedeck::media::gif::ensure_latest_texture;
@@ -19,7 +20,8 @@ pub struct ProfilePic<'cache, 'url> {
     pub action: Option<MediaAction>,
     pubkey: Option<&'url Pubkey>,
     accounts: Option<&'url Accounts>,
-    social_graph: Option<&'url std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ndb: Option<&'url Ndb>,
+    txn: Option<&'url Transaction>,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
@@ -37,9 +39,10 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
 
         self.action = inner.inner;
 
-        if let (Some(pubkey), Some(accounts)) = (self.pubkey, self.accounts) {
+        if let (Some(pubkey), Some(accounts), Some(ndb), Some(txn)) =
+            (self.pubkey, self.accounts, self.ndb, self.txn) {
             let logged_in = Some(&accounts.get_selected_account().key.pubkey);
-            if let Some(badge_color) = wot_badge::get_wot_badge(pubkey, logged_in, self.social_graph) {
+            if let Some(badge_color) = wot_badge::get_wot_badge(pubkey, logged_in, ndb, txn) {
                 let rect = inner.response.rect;
                 let badge_size = (self.size * 0.4).max(12.0);
                 let offset = badge_size * 0.25;
@@ -67,7 +70,8 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             action: None,
             pubkey: None,
             accounts: None,
-            social_graph: None,
+            ndb: None,
+            txn: None,
         }
     }
 
@@ -75,11 +79,13 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
         mut self,
         pubkey: &'url Pubkey,
         accounts: &'url Accounts,
-        social_graph: Option<&'url std::sync::Arc<nostr_social_graph::SocialGraph>>,
+        ndb: &'url Ndb,
+        txn: &'url Transaction,
     ) -> Self {
         self.pubkey = Some(pubkey);
         self.accounts = Some(accounts);
-        self.social_graph = social_graph;
+        self.ndb = Some(ndb);
+        self.txn = Some(txn);
         self
     }
 

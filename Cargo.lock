@@ -1084,7 +1084,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -3639,21 +3639,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostr-social-graph"
-version = "0.1.0"
-dependencies = [
- "hex",
- "log",
- "nostrdb",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "nostrdb"
 version = "0.8.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=2b2e5e43c019b80b98f1db6a03a1b88ca699bfa3#2b2e5e43c019b80b98f1db6a03a1b88ca699bfa3"
+source = "git+https://github.com/mmalmi/nostrdb-rs?rev=0d50367484013f54a7fc1394f6baebf032ec0702#0d50367484013f54a7fc1394f6baebf032ec0702"
 dependencies = [
  "bindgen",
  "cc",
@@ -3698,7 +3686,6 @@ dependencies = [
  "ndk-context",
  "nostr 0.37.0",
  "nostr-double-ratchet",
- "nostr-social-graph",
  "nostrdb",
  "nwc",
  "once_cell",
@@ -3803,7 +3790,6 @@ dependencies = [
  "ndk-context",
  "nostr 0.37.0",
  "nostr-double-ratchet",
- "nostr-social-graph",
  "nostrdb",
  "notedeck",
  "notedeck_ui",
@@ -3884,7 +3870,6 @@ dependencies = [
  "hashbrown 0.15.4",
  "hex",
  "image",
- "nostr-social-graph",
  "nostrdb",
  "notedeck",
  "poll-promise",
@@ -7200,7 +7185,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

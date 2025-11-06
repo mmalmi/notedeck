@@ -36,6 +36,7 @@ pub struct NoteView<'a, 'd> {
     note: &'a nostrdb::Note<'a>,
     flags: NoteOptions,
     jobs: &'a mut JobsCache,
+    txn: &'a Transaction,
 }
 
 pub struct NoteResponse {
@@ -84,6 +85,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
         note: &'a nostrdb::Note<'a>,
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
+        txn: &'a Transaction,
     ) -> Self {
         let parent: Option<NoteKey> = None;
 
@@ -93,6 +95,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             note,
             flags,
             jobs,
+            txn,
         }
     }
 
@@ -297,7 +300,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 profile,
                 self.note.pubkey(),
                 self.note_context.accounts,
-                self.note_context.social_graph,
+                self.note_context.ndb,
+                self.txn,
             ),
 
             None => show_fallback_pfp(ui, self.note_context.img_cache, pfp_size),
@@ -309,8 +313,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let acc = self.note_context.accounts.get_selected_account();
             if self.note.pubkey() == acc.key.pubkey.bytes() {
                 self.flags = self.flags.union(NoteOptions::TrustMedia);
-            } else if let Some(graph) = self.note_context.social_graph {
-                let distance = graph.get_follow_distance(self.note.pubkey()).unwrap_or(1000);
+            } else {
+                let mut pk_bytes = [0u8; 32];
+                pk_bytes.copy_from_slice(self.note.pubkey());
+                let distance = nostrdb::socialgraph::get_follow_distance(
+                    self.txn,
+                    self.note_context.ndb,
+                    &pk_bytes
+                );
                 if distance <= self.note_context.max_media_distance {
                     self.flags = self.flags.union(NoteOptions::TrustMedia);
                 }
@@ -700,7 +710,8 @@ fn show_actual_pfp(
     profile: &Result<nostrdb::ProfileRecord<'_>, nostrdb::Error>,
     note_pubkey: &[u8; 32],
     accounts: &Accounts,
-    social_graph: Option<&std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ndb: &Ndb,
+    txn: &Transaction,
 ) -> PfpResponse {
     let anim_speed = 0.05;
     let profile_key = profile.as_ref().unwrap().record().note_key();
@@ -719,7 +730,7 @@ fn show_actual_pfp(
     let pubkey = Pubkey::new(*note_pubkey);
     let mut pfp = ProfilePic::new(images, pic)
         .size(size)
-        .with_follow_check(&pubkey, accounts, social_graph);
+        .with_follow_check(&pubkey, accounts, ndb, txn);
     let pfp_resp = ui.put(rect, &mut pfp);
     let action = pfp.action;
 

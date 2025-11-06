@@ -22,7 +22,6 @@ pub struct MentionPickerView<'a> {
     img_cache: &'a mut Images,
     results: &'a Vec<&'a [u8; 32]>,
     accounts: &'a Accounts,
-    social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>,
 }
 
 pub enum MentionPickerResponse {
@@ -37,7 +36,6 @@ impl<'a> MentionPickerView<'a> {
         txn: &'a Transaction,
         results: &'a Vec<&'a [u8; 32]>,
         accounts: &'a Accounts,
-        social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>,
     ) -> Self {
         Self {
             ndb,
@@ -45,7 +43,6 @@ impl<'a> MentionPickerView<'a> {
             img_cache,
             accounts,
             results,
-            social_graph,
         }
     }
 
@@ -63,7 +60,7 @@ impl<'a> MentionPickerView<'a> {
 
                 let pubkey = Pubkey::new(**res);
                 if ui
-                    .add(user_result(&profile, &pubkey, self.img_cache, self.accounts, self.social_graph, i, width))
+                    .add(user_result(&profile, &pubkey, self.img_cache, self.accounts, self.ndb, self.txn, i, width))
                     .clicked()
                 {
                     selection = Some(i)
@@ -139,7 +136,8 @@ fn user_result<'a>(
     pubkey: &'a Pubkey,
     cache: &'a mut Images,
     accounts: &'a Accounts,
-    social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ndb: &'a nostrdb::Ndb,
+    txn: &'a nostrdb::Transaction,
     index: usize,
     width: f32,
 ) -> impl egui::Widget + 'a {
@@ -174,7 +172,7 @@ fn user_result<'a>(
             icon_rect,
             &mut ProfilePic::new(cache, get_profile_url(Some(profile)))
                 .size(helper.scale_1d_pos(min_img_size))
-                .with_follow_check(pubkey, accounts, social_graph),
+                .with_follow_check(pubkey, accounts, ndb, txn),
         );
 
         let name_font = FontId::new(

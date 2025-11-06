@@ -185,7 +185,7 @@ fn show_notes(
             return 1;
         }
 
-        let resp = note.show(note_context, flags, jobs, ui);
+        let resp = note.show(note_context, flags, jobs, txn, ui);
 
         action = if cur_index == selected_note_index {
             resp.action.and_then(strip_note_action)
@@ -327,10 +327,11 @@ impl<'a> ThreadNote<'a> {
         note_context: &'a mut NoteContext<'_>,
         flags: NoteOptions,
         jobs: &'a mut JobsCache,
+        txn: &Transaction,
         ui: &mut egui::Ui,
     ) -> NoteResponse {
         let inner = notedeck_ui::padding(8.0, ui, |ui| {
-            NoteView::new(note_context, &self.note, self.options(flags), jobs)
+            NoteView::new(note_context, &self.note, self.options(flags), jobs, txn)
                 .selected_style(self.note_type.is_selected())
                 .unread_indicator(self.unread_and_have_replies)
                 .show(ui)

@@ -485,6 +485,7 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
                 note_options,
                 self.jobs,
                 &underlying_note,
+                self.txn,
             ),
             NoteUnit::Composite(composite) => match composite {
                 CompositeUnit::Reaction(reaction_unit) => render_reaction_cluster(
@@ -684,10 +685,11 @@ fn render_note(
     note_options: NoteOptions,
     jobs: &mut JobsCache,
     note: &Note,
+    txn: &Transaction,
 ) -> RenderEntryResponse {
     let mut action = None;
     notedeck_ui::padding(8.0, ui, |ui| {
-        let resp = NoteView::new(note_context, note, note_options, jobs).show(ui);
+        let resp = NoteView::new(note_context, note, note_options, jobs, txn).show(ui);
 
         if let Some(note_action) = resp.action {
             action = Some(note_action);
@@ -739,6 +741,7 @@ fn render_reaction_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Reaction,
+        txn,
     )
 }
 
@@ -752,6 +755,7 @@ fn render_composite_entry(
     underlying_note: &nostrdb::Note<'_>,
     profiles_to_show: Vec<ProfileEntry>,
     composite_type: CompositeType,
+    txn: &Transaction,
 ) -> RenderEntryResponse {
     let first_name = get_display_name(profiles_to_show.iter().find_map(|opt| opt.record.as_ref()))
         .name()
@@ -774,13 +778,13 @@ fn render_composite_entry(
     };
 
     if !note_options.contains(NoteOptions::TrustMedia) {
-        if let Some(graph) = note_context.social_graph {
-            for entry in &profiles_to_show {
-                let distance = graph.get_follow_distance(entry.pk).unwrap_or(1000);
-                if distance <= note_context.max_media_distance {
-                    note_options = note_options.union(NoteOptions::TrustMedia);
-                    break;
-                }
+        for entry in &profiles_to_show {
+            let mut pk_bytes = [0u8; 32];
+            pk_bytes.copy_from_slice(entry.pk.bytes());
+            let distance = nostrdb::socialgraph::get_follow_distance(txn, note_context.ndb, &pk_bytes);
+            if distance <= note_context.max_media_distance {
+                note_options = note_options.union(NoteOptions::TrustMedia);
+                break;
             }
         }
     }
@@ -803,7 +807,8 @@ fn render_composite_entry(
                                     note_context.img_cache,
                                     note_options.contains(NoteOptions::Notification),
                                     note_context.accounts,
-                                    note_context.social_graph,
+                                    note_context.ndb,
+                                    txn,
                                 )
                             },
                         )
@@ -877,7 +882,7 @@ fn render_composite_entry(
 
                         ui.add_space(48.0);
                     };
-                    NoteView::new(note_context, underlying_note, note_options, jobs).show(ui)
+                    NoteView::new(note_context, underlying_note, note_options, jobs, txn).show(ui)
                 })
                 .inner;
 
@@ -898,7 +903,8 @@ fn render_profiles(
     img_cache: &mut notedeck::Images,
     notification: bool,
     accounts: &notedeck::Accounts,
-    social_graph: Option<&std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ndb: &nostrdb::Ndb,
+    txn: &nostrdb::Transaction,
 ) -> PfpsResponse {
     let mut action = None;
     if notification {
@@ -947,7 +953,7 @@ fn render_profiles(
                         ProfilePic::from_profile_or_default(img_cache, entry.record.as_ref())
                             .size(24.0)
                             .sense(Sense::click())
-                            .with_follow_check(entry.pk, accounts, social_graph);
+                            .with_follow_check(entry.pk, accounts, ndb, txn);
                     let mut resp = ui.put(rect, &mut widget);
                     rendered = true;
 
@@ -1014,6 +1020,7 @@ fn render_repost_cluster(
         underlying_note,
         profiles_to_show,
         CompositeType::Repost,
+        txn,
     )
 }
 

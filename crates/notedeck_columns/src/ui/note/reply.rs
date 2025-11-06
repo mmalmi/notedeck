@@ -19,6 +19,7 @@ pub struct PostReplyView<'a, 'd> {
     inner_rect: egui::Rect,
     note_options: NoteOptions,
     jobs: &'a mut JobsCache,
+    txn: &'a nostrdb::Transaction,
 }
 
 impl<'a, 'd> PostReplyView<'a, 'd> {
@@ -31,6 +32,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
         inner_rect: egui::Rect,
         note_options: NoteOptions,
         jobs: &'a mut JobsCache,
+        txn: &'a nostrdb::Transaction,
         col: usize,
     ) -> Self {
         PostReplyView {
@@ -42,6 +44,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             inner_rect,
             note_options,
             jobs,
+            txn,
         }
     }
 
@@ -85,7 +88,7 @@ impl<'a, 'd> PostReplyView<'a, 'd> {
             let quoted_note = egui::Frame::NONE
                 .outer_margin(egui::Margin::same(note_offset))
                 .show(ui, |ui| {
-                    NoteView::new(self.note_context, self.note, self.note_options, self.jobs)
+                    NoteView::new(self.note_context, self.note, self.note_options, self.jobs, self.txn)
                         .truncate(false)
                         .selectable_text(true)
                         .actionbar(false)

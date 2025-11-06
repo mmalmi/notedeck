@@ -310,17 +310,15 @@ fn profile_stats(
     ui: &mut egui::Ui,
     pubkey: &Pubkey,
     note_context: &mut NoteContext,
-    _txn: &Transaction,
+    txn: &Transaction,
 ) -> Option<ProfileViewAction> {
     let mut action = None;
 
-    let (following_count, follower_count) = if let Some(graph) = note_context.social_graph {
-        let following = graph.following_count(pubkey.bytes()).unwrap_or(0);
-        let followers = graph.follower_count(pubkey.bytes()).unwrap_or(0);
-        (following, followers)
-    } else {
-        (0, 0)
-    };
+    let mut pk_bytes = [0u8; 32];
+    pk_bytes.copy_from_slice(pubkey.bytes());
+
+    let following_count = nostrdb::socialgraph::get_followed(txn, note_context.ndb, &pk_bytes, 1).len();
+    let follower_count = nostrdb::socialgraph::follower_count(txn, note_context.ndb, &pk_bytes);
 
     ui.horizontal(|ui| {
         let resp = ui

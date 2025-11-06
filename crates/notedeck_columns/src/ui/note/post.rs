@@ -308,7 +308,6 @@ impl<'a, 'd> PostView<'a, 'd> {
             txn,
             &res,
             self.note_context.accounts,
-            self.note_context.social_graph,
         )
         .show_in_rect(hint_rect, ui);
 
@@ -892,7 +891,6 @@ mod preview {
                 i18n: app.i18n,
                 session_manager: &None,
                 chat_messages: &chat_messages_dummy,
-                social_graph: app.social_graph.as_ref(),
                 max_media_distance: 3,
             };
 

@@ -1,5 +1,6 @@
 use egui::{Color32, Pos2};
 use enostr::Pubkey;
+use nostrdb::{Ndb, Transaction};
 
 #[derive(Clone, Copy, Debug)]
 pub enum BadgeColor {
@@ -21,26 +22,33 @@ impl BadgeColor {
 pub fn get_wot_badge(
     pubkey: &Pubkey,
     logged_in_pubkey: Option<&Pubkey>,
-    social_graph: Option<&std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ndb: &Ndb,
+    txn: &Transaction,
 ) -> Option<BadgeColor> {
     let logged_in = logged_in_pubkey?;
-    let graph = social_graph?;
+
+    let mut logged_in_bytes = [0u8; 32];
+    logged_in_bytes.copy_from_slice(logged_in.bytes());
+    let mut pubkey_bytes = [0u8; 32];
+    pubkey_bytes.copy_from_slice(pubkey.bytes());
 
     // Check if muted
-    if let Ok(is_muted) = graph.is_muted(logged_in.bytes(), pubkey.bytes()) {
-        if is_muted {
-            return None;
-        }
+    if nostrdb::socialgraph::is_muting(txn, ndb, &logged_in_bytes, &pubkey_bytes) {
+        return None;
     }
 
-    let distance = graph.get_follow_distance(pubkey.bytes()).ok()?;
+    let distance = nostrdb::socialgraph::get_follow_distance(txn, ndb, &pubkey_bytes);
 
     match distance {
         0 => Some(BadgeColor::Purple),  // Self
         1 => Some(BadgeColor::Purple),  // Following
         2 => {
             // Check how many friends follow this user
-            let friends_count = graph.followed_by_friends_count(pubkey.bytes()).ok().unwrap_or(0);
+            let followers = nostrdb::socialgraph::get_followers(txn, ndb, &pubkey_bytes, 100);
+            let friends_count = followers.iter().filter(|follower| {
+                nostrdb::socialgraph::get_follow_distance(txn, ndb, follower) == 1
+            }).count();
+
             if friends_count >= 10 {
                 Some(BadgeColor::Orange)
             } else if friends_count > 0 {

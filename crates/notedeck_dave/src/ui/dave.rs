@@ -226,7 +226,6 @@ impl<'a> DaveUi<'a> {
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
             chat_messages: &chat_messages_dummy,
-            social_graph: ctx.social_graph.as_ref(),
             max_media_distance: 3,
         };
 
@@ -255,6 +254,7 @@ impl<'a> DaveUi<'a> {
                                         &note,
                                         NoteOptions::default(),
                                         jobs,
+                                        &txn,
                                     )
                                     .preview_style()
                                     .hide_media(true)

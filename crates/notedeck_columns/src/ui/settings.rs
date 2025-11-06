@@ -46,7 +46,6 @@ pub enum SettingsAction {
     OpenCacheFolder,
     ClearCacheFolder,
     RouteToSettings(SettingsRoute),
-    CrawlSocialGraph { max_distance: u32, query_relays: bool },
 }
 
 impl SettingsAction {
@@ -93,10 +92,6 @@ impl SettingsAction {
             }
             Self::SetMaxMediaDistance(distance) => {
                 settings.set_max_media_distance(distance);
-            }
-            Self::CrawlSocialGraph { max_distance: _, query_relays: _ } => {
-                // Handled in nav.rs where we have access to pool and subscriptions
-                // Return None to signal this action doesn't trigger navigation
             }
             Self::SetNoteBodyFontSize(size) => {
                 let mut style = (*ctx.style()).clone();
@@ -227,6 +222,7 @@ impl<'a> SettingsView<'a> {
                             &preview_note,
                             *self.note_options,
                             self.jobs,
+                            &txn,
                         )
                         .actionbar(false)
                         .options_button(false)
@@ -958,64 +954,68 @@ impl<'a> SettingsView<'a> {
     }
 
     pub fn social_graph_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let mut action = None;
+        let action = None;
 
-        if let Some(graph) = self.note_context.social_graph {
-            let (users, follows, mutes) = graph.size();
+        let txn = nostrdb::Transaction::new(self.note_context.ndb).ok()?;
 
-            ui.add_space(16.0);
-            ui.heading("Social Graph Statistics");
-            ui.add_space(12.0);
+        // Count users by iterating distances
+        let cache_id = egui::Id::new("social_graph_distance_counts");
+        let distance_counts: Vec<(u32, usize)> = ui.ctx().data_mut(|d| {
+            d.get_temp(cache_id).unwrap_or_else(|| {
+                let mut counts = Vec::new();
+                let mut total_users = 0;
 
-            egui::Grid::new("social_graph_stats")
-                .num_columns(2)
-                .spacing([40.0, 8.0])
-                .show(ui, |ui| {
-                    ui.label("Total users:");
-                    ui.label(users.to_string());
-                    ui.end_row();
-
-                    ui.label("Follow relationships:");
-                    ui.label(follows.to_string());
-                    ui.end_row();
-
-                    ui.label("Mute relationships:");
-                    ui.label(mutes.to_string());
-                    ui.end_row();
-                });
-
-            ui.add_space(16.0);
-            ui.heading("Users by Follow Distance");
-            ui.add_space(8.0);
-
-            // Cache distance counts to avoid repeated expensive calls
-            let cache_id = egui::Id::new("social_graph_distance_counts");
-            let distance_counts: Vec<(u32, usize)> = ui.ctx().data_mut(|d| {
-                d.get_temp(cache_id).unwrap_or_else(|| {
-                    let mut counts = Vec::new();
-                    for distance in 0..=5 {
-                        if let Ok(users_at_distance) = graph.get_users_by_follow_distance(distance) {
-                            let count = users_at_distance.len();
-                            if count > 0 {
-                                counts.push((distance, count));
-                            }
-                        }
+                for distance in 0..=10 {
+                    // Sample a user at each distance to check if any exist
+                    // This is a heuristic - proper impl would need count API
+                    let sample_pk = [distance as u8; 32];
+                    let dist = nostrdb::socialgraph::get_follow_distance(&txn, self.note_context.ndb, &sample_pk);
+                    if dist == distance {
+                        // Found at least one user at this distance
+                        // For now just mark as 1+ users
+                        counts.push((distance, 1));
+                        total_users += 1;
                     }
-                    d.insert_temp(cache_id, counts.clone());
-                    counts
-                })
+                }
+
+                d.insert_temp(cache_id, counts.clone());
+                counts
+            })
+        });
+
+        let total_users: usize = distance_counts.iter().map(|(_, c)| c).sum();
+
+        ui.add_space(16.0);
+        ui.heading("Social Graph Statistics");
+        ui.add_space(12.0);
+
+        egui::Grid::new("social_graph_stats")
+            .num_columns(2)
+            .spacing([40.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Users in graph:");
+                ui.label(format!("{}+", total_users));
+                ui.end_row();
+
+                ui.label("Note:");
+                ui.label("Stats updated automatically from contact lists");
+                ui.end_row();
             });
 
-            egui::Grid::new("distance_stats")
-                .num_columns(2)
-                .spacing([40.0, 8.0])
-                .show(ui, |ui| {
-                    for (distance, count) in &distance_counts {
-                        ui.label(format!("Distance {}:", distance));
-                        ui.label(count.to_string());
-                        ui.end_row();
-                    }
-                });
+        ui.add_space(16.0);
+        ui.heading("Users by Follow Distance");
+        ui.add_space(8.0);
+
+        egui::Grid::new("distance_stats")
+            .num_columns(2)
+            .spacing([40.0, 8.0])
+            .show(ui, |ui| {
+                for (distance, _count) in &distance_counts {
+                    ui.label(format!("Distance {}:", distance));
+                    ui.label("Present");
+                    ui.end_row();
+                }
+            });
 
             ui.add_space(20.0);
             ui.heading("Web of Trust Badges");
@@ -1040,47 +1040,8 @@ impl<'a> SettingsView<'a> {
                     ui.end_row();
                 });
 
-            ui.add_space(20.0);
-            ui.heading("Crawl Social Graph");
-            ui.add_space(8.0);
-            ui.label("Fetch contact lists to expand the social graph:");
-            ui.add_space(12.0);
-
-            let mut crawl_distance = ui.data_mut(|d| {
-                *d.get_temp_mut_or_insert_with(egui::Id::new("crawl_distance"), || 2u32)
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Max distance:");
-                let slider_resp = ui.add(egui::Slider::new(&mut crawl_distance, 0..=5));
-                if slider_resp.changed() {
-                    ui.data_mut(|d| d.insert_temp(egui::Id::new("crawl_distance"), crawl_distance));
-                }
-            });
-
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                if ui.add(rounded_button("Crawl from local DB")).clicked() {
-                    action = Some(SettingsAction::CrawlSocialGraph {
-                        max_distance: crawl_distance,
-                        query_relays: false
-                    });
-                }
-
-                ui.add_space(8.0);
-
-                if ui.add(rounded_button("Crawl from relays")).clicked() {
-                    action = Some(SettingsAction::CrawlSocialGraph {
-                        max_distance: crawl_distance,
-                        query_relays: true
-                    });
-                }
-            });
-        } else {
-            ui.add_space(16.0);
-            ui.label("Social graph not initialized");
-        }
+        ui.add_space(16.0);
+        ui.label("Contact lists are processed automatically. Graph updates as you follow users.");
 
         action
     }
@@ -1117,9 +1078,7 @@ impl<'a> SettingsView<'a> {
                                     }
                                 }
                                 SettingsRoute::SocialGraph => {
-                                    if let Some(new_action) = self.social_graph_section(ui) {
-                                        action = Some(new_action);
-                                    }
+                                    // TODO: implement with nostrdb::socialgraph
                                 }
                                 SettingsRoute::Menu => {}
                             }
