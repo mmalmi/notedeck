@@ -154,6 +154,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 self.txn,
                 &results,
                 self.note_context.accounts,
+                self.note_context.social_graph,
             )
             .show_in_rect(ui.available_rect_before_wrap(), ui);
 
@@ -229,6 +230,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 let is_selected = self.query.selected_index == (i as i32 + 1);
                 if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
                     .with_accounts(self.note_context.accounts)
+                    .with_social_graph(self.note_context.social_graph)
                     .with_selection(is_selected)).clicked() {
                     return Some(SearchAction::NavigateToProfile(pubkey));
                 }
@@ -293,6 +295,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         ui.available_width(),
                         self.note_context.img_cache,
                         self.note_context.accounts,
+                        self.note_context.social_graph,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
@@ -668,6 +671,7 @@ fn recent_profile_item<'a>(
     width: f32,
     cache: &'a mut Images,
     accounts: &'a notedeck::Accounts,
+    social_graph: Option<&'a std::sync::Arc<nostr_social_graph::SocialGraph>>,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -707,7 +711,7 @@ fn recent_profile_item<'a>(
             pfp_rect,
             &mut ProfilePic::new(cache, get_profile_url(profile))
                 .size(min_img_size)
-                .with_follow_check(pubkey, accounts),
+                .with_follow_check(pubkey, accounts, social_graph),
         );
 
         let name = get_display_name(profile).name();

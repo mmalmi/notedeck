@@ -12,6 +12,7 @@ pub mod note;
 pub mod profile;
 mod username;
 pub mod widgets;
+pub mod wot_badge;
 
 pub use anim::{AnimationHelper, PulseAlpha};
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};

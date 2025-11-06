@@ -137,6 +137,7 @@ pub fn render_media(
     let cache = match media_type {
         MediaCacheType::Image => &mut img_cache.static_imgs,
         MediaCacheType::Gif => &mut img_cache.gifs,
+        MediaCacheType::Blossom => &mut img_cache.blossom,
     };
     let media_state = get_content_media_render_state(
         ui,
@@ -155,7 +156,7 @@ pub fn render_media(
         // if animations aren't disabled, we cap it at 24fps for gifs in carousels
         let fps = match media_type {
             MediaCacheType::Gif => Some(24.0),
-            MediaCacheType::Image => None,
+            MediaCacheType::Image | MediaCacheType::Blossom => None,
         };
         AnimationMode::Continuous { fps }
     });
@@ -485,8 +486,8 @@ fn render_blur_text(
     let info_galley = painter.layout(
         tr!(
             i18n,
-            "Media from someone you don't follow",
-            "Text shown on blurred media from unfollowed users"
+            "Media from outside your web of trust",
+            "Text shown on blurred media from users beyond max distance"
         )
         .to_owned(),
         animation_fontid.clone(),

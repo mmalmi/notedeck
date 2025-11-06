@@ -8,7 +8,7 @@ use crate::{
     options::AppOptions,
     route::Route,
     storage,
-    subscriptions::{SubKind, Subscriptions},
+    subscriptions::{new_sub_id, SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     toolbar::unseen_notification,
@@ -249,6 +249,53 @@ fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     pool.send(&msg);
 }
 
+fn subscribe_to_wot_contact_lists(
+    subscriptions: &mut Subscriptions,
+    pool: &mut RelayPool,
+    graph: &std::sync::Arc<nostr_social_graph::SocialGraph>,
+) {
+    let mut authors = Vec::new();
+
+    for distance in 0..=2 {
+        if let Ok(users) = graph.get_users_by_follow_distance(distance) {
+            for user_hex in users {
+                if user_hex.len() == 64 {
+                    if let Ok(pk_bytes) = hex::decode(&user_hex) {
+                        if pk_bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&pk_bytes);
+                            authors.push(arr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if authors.is_empty() {
+        return;
+    }
+
+    info!("Subscribing to contact lists for {} users (batched)", authors.len());
+
+    const BATCH_SIZE: usize = 500;
+    let total_batches = (authors.len() + BATCH_SIZE - 1) / BATCH_SIZE;
+
+    for (batch_idx, chunk) in authors.chunks(BATCH_SIZE).enumerate() {
+        let filter = enostr::Filter::new()
+            .kinds([3, 10000])
+            .authors(chunk)
+            .build();
+
+        let subid = new_sub_id();
+        subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
+        let msg = ClientMessage::req(subid, vec![filter]);
+        pool.send(&msg);
+
+        info!("Subscribed batch {}/{} ({} authors)", batch_idx + 1, total_batches, chunk.len());
+    }
+}
+
 #[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
@@ -273,6 +320,11 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 app_ctx.unknown_ids,
             ) {
                 warn!("update_damus init: {err}");
+            }
+
+            // Subscribe to WoT contact lists
+            if let Some(graph) = app_ctx.social_graph {
+                subscribe_to_wot_contact_lists(&mut damus.subscriptions, app_ctx.pool, graph);
             }
         }
 
@@ -327,6 +379,11 @@ fn handle_eose(
             ctx.pool.send_to(&msg, relay_url);
         }
 
+        SubKind::ContactLists => {
+            // Keep subscription open to receive updates
+            info!("Social graph contact lists subscription established on {}", relay_url);
+        }
+
         SubKind::FetchingContactList(timeline_uid) => {
             let timeline = if let Some(tl) = timeline_cache.get_mut(timeline_uid) {
                 tl
@@ -374,18 +431,52 @@ fn handle_eose(
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(_subid, ev) => {
-            // Route to SessionManager if it's a session-related event (kinds 30078, 443)
-            if let Some(tx) = &ctx.session_event_tx {
-                if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
-                    if let Ok(note_id) = enostr::NoteId::from_hex(ev) {
-                        if let Ok(note) = ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
-                            let kind = note.kind();
-                            // Route invite (30078), invite response (1059), and encrypted messages (1060)
-                            if kind == 30078 || kind == 1059 || kind == 1060 {
+            if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
+                if let Ok(note_id) = enostr::NoteId::from_hex(ev) {
+                    if let Ok(note) = ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
+                        let kind = note.kind();
+
+                        // Route session events to SessionManager
+                        if kind == 30078 || kind == 1059 || kind == 1060 {
+                            if let Some(tx) = &ctx.session_event_tx {
                                 if let Ok(json) = note.json() {
                                     if let Ok(event) = nostr::Event::from_json(&json) {
                                         let unsigned = nostr::UnsignedEvent::from(event);
                                         let _ = tx.send(nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(unsigned));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update social graph for contact/mute lists
+                        if (kind == 3 || kind == 10000) && ctx.social_graph.is_some() {
+                            if let Some(graph) = ctx.social_graph {
+                                let pubkey = note.pubkey();
+                                let created_at = note.created_at();
+
+                                let mut p_tags = Vec::new();
+                                for tag in note.tags().iter() {
+                                    if tag.count() >= 2 {
+                                        if let Some("p") = tag.get_str(0) {
+                                            if let Some(pk_bytes) = tag.get_id(1) {
+                                                p_tags.push(*pk_bytes);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let result = if kind == 3 {
+                                    graph.handle_contact_list(pubkey, &p_tags, created_at)
+                                } else {
+                                    graph.handle_mute_list(pubkey, &p_tags, created_at)
+                                };
+
+                                if let Err(e) = result {
+                                    debug!("Error updating social graph: {:?}", e);
+                                } else if kind == 3 {
+                                    // Recalculate distances after new contact list
+                                    if let Err(e) = graph.recalculate_follow_distances() {
+                                        debug!("Error recalculating distances: {:?}", e);
                                     }
                                 }
                             }
@@ -778,6 +869,9 @@ fn render_damus_mobile(
                                     app_ctx.pool,
                                     ui.ctx(),
                                 );
+                                if let Some(graph) = app_ctx.social_graph {
+                                    app_ctx.accounts.update_social_graph_root(graph);
+                                }
                             }
                         }
                     }
@@ -1057,6 +1151,9 @@ fn timelines_view(
                         ctx.pool,
                         ui.ctx(),
                     );
+                    if let Some(graph) = ctx.social_graph {
+                        ctx.accounts.update_social_graph_root(graph);
+                    }
                 }
             }
         }

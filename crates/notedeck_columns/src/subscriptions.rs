@@ -17,6 +17,9 @@ pub enum SubKind {
     /// Filter.
     // TODO: generalize this to any list?
     FetchingContactList(TimelineKind),
+
+    /// Contact lists subscription for users at distance 0-2 to build social graph
+    ContactLists,
 }
 
 /// Subscriptions that need to be tracked at various stages. Sometimes we

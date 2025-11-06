@@ -10,6 +10,7 @@ members = [
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
     "crates/nostr-double-ratchet",
+    "crates/nostr-social-graph",
 
     "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash",
 ]
@@ -57,6 +58,7 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
+nostr-social-graph = { path = "crates/nostr-social-graph" }
 once_cell = "1.19.0"
 robius-open = "0.1"
 poll-promise = { version = "0.3.0", features = ["tokio"] }

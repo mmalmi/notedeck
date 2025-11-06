@@ -226,6 +226,8 @@ impl<'a> DaveUi<'a> {
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
             chat_messages: &chat_messages_dummy,
+            social_graph: ctx.social_graph.as_ref(),
+            max_media_distance: 3,
         };
 
         let txn = Transaction::new(note_context.ndb).unwrap();

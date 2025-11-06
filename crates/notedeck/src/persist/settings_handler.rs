@@ -14,6 +14,7 @@ const DEFAULT_LOCALE: &str = "en-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
+const DEFAULT_MAX_MEDIA_DISTANCE: u32 = 3;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -38,6 +39,12 @@ pub struct Settings {
     pub note_body_font_size: f32,
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
+    #[serde(default = "default_max_media_distance")]
+    pub max_media_distance: u32,
+}
+
+fn default_max_media_distance() -> u32 {
+    DEFAULT_MAX_MEDIA_DISTANCE
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -54,6 +61,7 @@ impl Default for Settings {
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
+            max_media_distance: DEFAULT_MAX_MEDIA_DISTANCE,
         }
     }
 }
@@ -203,6 +211,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_max_media_distance(&mut self, distance: u32) {
+        self.get_settings_mut().max_media_distance = distance;
+        self.try_save_settings();
+    }
+
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),
@@ -261,5 +274,12 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.note_body_font_size)
             .unwrap_or(DEFAULT_NOTE_BODY_FONT_SIZE)
+    }
+
+    pub fn max_media_distance(&self) -> u32 {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.max_media_distance)
+            .unwrap_or(DEFAULT_MAX_MEDIA_DISTANCE)
     }
 }

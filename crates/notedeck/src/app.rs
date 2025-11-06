@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 use nostr_double_ratchet::{SessionManager, DebouncedFileStorage, SessionManagerEvent};
+use nostr_social_graph::SocialGraph;
 use crossbeam_channel::Receiver;
 
 #[derive(Clone, Debug)]
@@ -100,6 +101,7 @@ pub struct Notedeck {
     session_event_rx: Option<Receiver<SessionManagerEvent>>,
     session_event_tx: Option<crossbeam_channel::Sender<SessionManagerEvent>>,
     chat_messages: ChatMessages,
+    social_graph: Option<Arc<SocialGraph>>,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -373,6 +375,11 @@ impl Notedeck {
         let (session_event_tx, session_event_rx) = crossbeam_channel::unbounded();
         let session_manager = Self::init_session_manager(&path, &accounts, session_event_tx.clone());
 
+        // Initialize and populate synchronously (fast with batched recalculate)
+        let start = std::time::Instant::now();
+        let social_graph = Self::init_social_graph(&accounts, &ndb, &txn);
+        info!("Social graph initialization took {:?}", start.elapsed());
+
         Self {
             ndb,
             img_cache,
@@ -396,6 +403,7 @@ impl Notedeck {
             session_event_rx: Some(session_event_rx),
             session_event_tx: Some(session_event_tx),
             chat_messages: Arc::new(Mutex::new(HashMap::new())),
+            social_graph,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -438,6 +446,45 @@ impl Notedeck {
         }
 
         Some(Arc::new(manager))
+    }
+
+    fn init_social_graph_lazy(accounts: &Accounts) -> Option<Arc<SocialGraph>> {
+        let selected_account = accounts.get_selected_account();
+        let root_pubkey = selected_account.key.pubkey.bytes();
+
+        match SocialGraph::new(root_pubkey) {
+            Ok(graph) => {
+                info!("Social graph initialized (empty), will populate in background");
+                Some(Arc::new(graph))
+            }
+            Err(e) => {
+                error!("Failed to create social graph: {}", e);
+                None
+            }
+        }
+    }
+
+    fn init_social_graph(accounts: &Accounts, ndb: &Ndb, txn: &Transaction) -> Option<Arc<SocialGraph>> {
+        let selected_account = accounts.get_selected_account();
+        let root_pubkey = selected_account.key.pubkey.bytes();
+
+        match SocialGraph::new(root_pubkey) {
+            Ok(graph) => {
+                info!("Initializing social graph for {}", hex::encode(root_pubkey));
+                if let Err(e) = graph.populate_from_ndb(ndb, txn) {
+                    error!("Failed to populate social graph: {}", e);
+                    None
+                } else {
+                    let (users, follows, mutes) = graph.size();
+                    info!("Social graph initialized: {} users, {} follows, {} mutes", users, follows, mutes);
+                    Some(Arc::new(graph))
+                }
+            }
+            Err(e) => {
+                error!("Failed to create social graph: {}", e);
+                None
+            }
+        }
     }
 
     fn get_or_create_device_id(path: &DataPath, pubkey: &enostr::Pubkey) -> String {
@@ -525,6 +572,7 @@ impl Notedeck {
             session_manager: &self.session_manager,
             session_event_tx: &self.session_event_tx,
             chat_messages: &self.chat_messages,
+            social_graph: &self.social_graph,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

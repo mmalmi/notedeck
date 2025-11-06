@@ -233,7 +233,7 @@ async fn async_fetch_img_from_disk(
     cache_type: MediaCacheType,
 ) -> Result<TexturedImage, crate::Error> {
     match cache_type {
-        MediaCacheType::Image => {
+        MediaCacheType::Image | MediaCacheType::Blossom => {
             let data = fs::read(path).await?;
             let image_buffer = image::load_from_memory(&data).map_err(crate::Error::Image)?;
 
@@ -401,6 +401,22 @@ pub fn fetch_img(
     imgtyp: ImageType,
     cache_type: MediaCacheType,
 ) -> Promise<Option<Result<TexturedImage, crate::Error>>> {
+    // For blossom URLs, check if we have the content cached by hash
+    if let Some(content_hash) = crate::extract_blossom_sha256(url) {
+        let blossom_key = MediaCache::blossom_key(&content_hash);
+        let blossom_path = img_cache_path
+            .parent()
+            .unwrap_or(img_cache_path)
+            .join("blossom")
+            .join(blossom_key);
+
+        if blossom_path.exists() {
+            return fetch_img_from_disk(ctx, url, &blossom_path, MediaCacheType::Blossom);
+        }
+        // If not in blossom cache, fall through to regular fetch which will verify hash
+    }
+
+    // Regular URL-based cache lookup
     let key = MediaCache::key(url);
     let path = img_cache_path.join(key);
 
@@ -409,8 +425,6 @@ pub fn fetch_img(
     } else {
         fetch_img_from_net(img_cache_path, ctx, url, imgtyp, cache_type)
     }
-
-    // TODO: fetch image from local cache
 }
 
 fn fetch_img_from_net(
@@ -425,10 +439,19 @@ fn fetch_img_from_net(
     let ctx = ctx.clone();
     let cloned_url = url.to_owned();
     let cache_path = cache_path.to_owned();
+
+    // Check if this is a blossom URL and extract the expected hash
+    let expected_blossom_hash = crate::extract_blossom_sha256(&cloned_url);
+
     ehttp::fetch(request, move |response| {
         let handle = response.map_err(crate::Error::Generic).and_then(|resp| {
+            // Verify blossom hash if this is a blossom URL
+            if let Some(ref hash) = expected_blossom_hash {
+                crate::verify_sha256(&resp.bytes, hash)?;
+            }
+
             match cache_type {
-                MediaCacheType::Image => {
+                MediaCacheType::Image | MediaCacheType::Blossom => {
                     let img = parse_img_response(resp, imgtyp);
                     img.map(|img| {
                         let texture_handle = load_texture_checked(
@@ -439,8 +462,33 @@ fn fetch_img_from_net(
                         );
 
                         // write to disk
+                        let blossom_hash = expected_blossom_hash.clone();
                         std::thread::spawn(move || {
-                            MediaCache::write(&cache_path, &cloned_url, img)
+                            // Write to regular URL-based cache
+                            if let Err(e) = MediaCache::write(&cache_path, &cloned_url, img.clone()) {
+                                tracing::error!("Failed to write to cache: {e}");
+                            }
+
+                            // If blossom URL, also write to content-addressed cache
+                            if let Some(hash) = blossom_hash {
+                                let blossom_cache_path = cache_path
+                                    .parent()
+                                    .unwrap_or(&cache_path)
+                                    .join("blossom");
+                                let blossom_key = MediaCache::blossom_key(&hash);
+                                let blossom_file_path = blossom_cache_path.join(&blossom_key);
+
+                                if let Some(parent) = blossom_file_path.parent() {
+                                    if let Err(e) = std::fs::create_dir_all(parent) {
+                                        tracing::error!("Failed to create blossom cache dir: {e}");
+                                        return;
+                                    }
+                                }
+
+                                if let Err(e) = MediaCache::write(&blossom_cache_path, &hash, img) {
+                                    tracing::error!("Failed to write to blossom cache: {e}");
+                                }
+                            }
                         });
 
                         TexturedImage::Static(texture_handle)

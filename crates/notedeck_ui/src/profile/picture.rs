@@ -6,7 +6,8 @@ use notedeck::media::gif::ensure_latest_texture;
 use notedeck::media::images::{fetch_no_pfp_promise, ImageType};
 use notedeck::media::AnimationMode;
 use notedeck::MediaAction;
-use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Accounts, Images, IsFollowing};
+use notedeck::{show_one_error_message, supported_mime_hosted_at_url, Accounts, Images};
+use crate::wot_badge;
 
 pub struct ProfilePic<'cache, 'url> {
     cache: &'cache mut Images,
@@ -18,6 +19,7 @@ pub struct ProfilePic<'cache, 'url> {
     pub action: Option<MediaAction>,
     pubkey: Option<&'url Pubkey>,
     accounts: Option<&'url Accounts>,
+    social_graph: Option<&'url std::sync::Arc<nostr_social_graph::SocialGraph>>,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
@@ -35,32 +37,15 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
 
         self.action = inner.inner;
 
-        let should_show_badge = if let (Some(pubkey), Some(accounts)) = (self.pubkey, self.accounts) {
-            let selected = accounts.get_selected_account();
-            selected.key.pubkey == *pubkey || selected.is_following(pubkey.bytes()) == IsFollowing::Yes
-        } else {
-            false
-        };
-
-        if should_show_badge {
-            let rect = inner.response.rect;
-            let badge_size = (self.size * 0.4).max(12.0);
-            let offset = badge_size * 0.25;
-            let badge_pos = rect.right_top() + egui::vec2(-offset, offset);
-
-            ui.painter().circle_filled(
-                badge_pos,
-                badge_size / 2.0,
-                egui::Color32::from_rgb(139, 92, 246),
-            );
-
-            ui.painter().text(
-                badge_pos,
-                egui::Align2::CENTER_CENTER,
-                "✓",
-                egui::FontId::proportional(badge_size * 0.6),
-                egui::Color32::WHITE,
-            );
+        if let (Some(pubkey), Some(accounts)) = (self.pubkey, self.accounts) {
+            let logged_in = Some(&accounts.get_selected_account().key.pubkey);
+            if let Some(badge_color) = wot_badge::get_wot_badge(pubkey, logged_in, self.social_graph) {
+                let rect = inner.response.rect;
+                let badge_size = (self.size * 0.4).max(12.0);
+                let offset = badge_size * 0.25;
+                let badge_pos = rect.right_top() + egui::vec2(-offset, offset);
+                wot_badge::paint_wot_badge(ui.painter(), badge_pos, badge_size, badge_color);
+            }
         }
 
         inner.response
@@ -82,12 +67,19 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             action: None,
             pubkey: None,
             accounts: None,
+            social_graph: None,
         }
     }
 
-    pub fn with_follow_check(mut self, pubkey: &'url Pubkey, accounts: &'url Accounts) -> Self {
+    pub fn with_follow_check(
+        mut self,
+        pubkey: &'url Pubkey,
+        accounts: &'url Accounts,
+        social_graph: Option<&'url std::sync::Arc<nostr_social_graph::SocialGraph>>,
+    ) -> Self {
         self.pubkey = Some(pubkey);
         self.accounts = Some(accounts);
+        self.social_graph = social_graph;
         self
     }
 

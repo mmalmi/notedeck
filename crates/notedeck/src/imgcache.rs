@@ -241,6 +241,7 @@ pub struct MediaCache {
 pub enum MediaCacheType {
     Image,
     Gif,
+    Blossom,
 }
 
 impl MediaCache {
@@ -276,6 +277,7 @@ impl MediaCache {
         match cache_type {
             MediaCacheType::Image => "img",
             MediaCacheType::Gif => "gif",
+            MediaCacheType::Blossom => "blossom",
         }
     }
 
@@ -290,6 +292,16 @@ impl MediaCache {
             image::ColorType::Rgba8.into(),
         )?;
 
+        Ok(())
+    }
+
+    /// Write raw bytes to blossom cache using content hash as key
+    pub fn write_blossom(cache_dir: &path::Path, content_hash: &str, data: &[u8]) -> Result<()> {
+        let file_path = cache_dir.join(Self::blossom_key(content_hash));
+        if let Some(p) = file_path.parent() {
+            create_dir_all(p)?;
+        }
+        std::fs::write(file_path, data)?;
         Ok(())
     }
 
@@ -325,6 +337,15 @@ impl MediaCache {
         PathBuf::from(&k[0..2])
             .join(&k[2..4])
             .join(k)
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Key for blossom cache - uses content hash directly instead of URL hash
+    pub fn blossom_key(content_hash: &str) -> String {
+        PathBuf::from(&content_hash[0..2])
+            .join(&content_hash[2..4])
+            .join(content_hash)
             .to_string_lossy()
             .to_string()
     }
@@ -413,6 +434,7 @@ pub struct Images {
     pub base_path: path::PathBuf,
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
+    pub blossom: MediaCache,
     pub urls: UrlMimes,
     /// cached imeta data
     pub metadata: HashMap<String, ImageMetadata>,
@@ -426,6 +448,7 @@ impl Images {
             base_path: path.clone(),
             static_imgs: MediaCache::new(&path, MediaCacheType::Image),
             gifs: MediaCache::new(&path, MediaCacheType::Gif),
+            blossom: MediaCache::new(&path, MediaCacheType::Blossom),
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
             metadata: Default::default(),
@@ -434,7 +457,8 @@ impl Images {
 
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
-        self.gifs.migrate_v0()
+        self.gifs.migrate_v0()?;
+        self.blossom.migrate_v0()
     }
 
     pub fn get_renderable_media(&mut self, url: &str) -> Option<RenderableMedia> {
@@ -485,6 +509,7 @@ impl Images {
         let cache = match cache_type {
             MediaCacheType::Image => &mut self.static_imgs,
             MediaCacheType::Gif => &mut self.gifs,
+            MediaCacheType::Blossom => &mut self.blossom,
         };
 
         ensure_latest_texture_from_cache(
@@ -500,6 +525,7 @@ impl Images {
         match cache_type {
             MediaCacheType::Image => &self.static_imgs,
             MediaCacheType::Gif => &self.gifs,
+            MediaCacheType::Blossom => &self.blossom,
         }
     }
 
@@ -507,6 +533,7 @@ impl Images {
         match cache_type {
             MediaCacheType::Image => &mut self.static_imgs,
             MediaCacheType::Gif => &mut self.gifs,
+            MediaCacheType::Blossom => &mut self.blossom,
         }
     }
 
@@ -525,6 +552,7 @@ impl Images {
         self.urls.cache.clear();
         self.static_imgs.clear();
         self.gifs.clear();
+        self.blossom.clear();
         self.gif_states.clear();
 
         Ok(())
@@ -556,6 +584,7 @@ pub fn get_render_state<'a>(
     let cache = match cache_type {
         MediaCacheType::Image => &mut images.static_imgs,
         MediaCacheType::Gif => &mut images.gifs,
+        MediaCacheType::Blossom => &mut images.blossom,
     };
 
     let texture_state = cache.textures_cache.handle_and_get_or_insert(url, || {

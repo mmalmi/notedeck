@@ -21,3 +21,5 @@ image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
 hashbrown = { workspace = true }
+nostr-social-graph = { workspace = true }
+hex = { workspace = true }

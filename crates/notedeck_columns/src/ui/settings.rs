@@ -41,10 +41,12 @@ pub enum SettingsAction {
     SetRepliestNewestFirst(bool),
     SetNoteBodyFontSize(f32),
     SetAnimateNavTransitions(bool),
+    SetMaxMediaDistance(u32),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
     RouteToSettings(SettingsRoute),
+    CrawlSocialGraph { max_distance: u32, query_relays: bool },
 }
 
 impl SettingsAction {
@@ -88,6 +90,13 @@ impl SettingsAction {
             }
             Self::ClearCacheFolder => {
                 let _ = img_cache.clear_folder_contents();
+            }
+            Self::SetMaxMediaDistance(distance) => {
+                settings.set_max_media_distance(distance);
+            }
+            Self::CrawlSocialGraph { max_distance: _, query_relays: _ } => {
+                // Handled in nav.rs where we have access to pool and subscriptions
+                // Return None to signal this action doesn't trigger navigation
             }
             Self::SetNoteBodyFontSize(size) => {
                 let mut style = (*ctx.style()).clone();
@@ -390,9 +399,10 @@ impl<'a> SettingsView<'a> {
         );
         settings_group(ui, title, |ui| {
             // Image cache size row
-            let static_imgs_size = self.note_context.img_cache.static_imgs.cache_size.lock().unwrap();
-            let gifs_size = self.note_context.img_cache.gifs.cache_size.lock().unwrap();
-            let total_size = [static_imgs_size, gifs_size].iter().fold(0_u64, |acc, cur| acc + cur.unwrap_or_default());
+            let static_imgs_size = *self.note_context.img_cache.static_imgs.cache_size.lock().unwrap();
+            let gifs_size = *self.note_context.img_cache.gifs.cache_size.lock().unwrap();
+            let blossom_size_val = *self.note_context.img_cache.blossom.cache_size.lock().unwrap();
+            let total_size = [static_imgs_size, gifs_size, blossom_size_val].iter().fold(0_u64, |acc, cur| acc + cur.unwrap_or_default());
 
             ui.horizontal(|ui| {
                 ui.set_height(44.0);
@@ -406,6 +416,27 @@ impl<'a> SettingsView<'a> {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
                     ui.label(format_size(total_size));
+                });
+            });
+
+            // Blossom cache size row (detail)
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(32.0);
+                ui.label(RichText::new(tr!(
+                    self.note_context.i18n,
+                    "Blossom (content-addressed)",
+                    "Label for Blossom cache size detail, Storage settings section"
+                )).text_style(NotedeckTextStyle::Body.text_style()).color(ui.visuals().weak_text_color()));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    ui.label(RichText::new(format_size(blossom_size_val.unwrap_or_default())).color(ui.visuals().weak_text_color()));
                 });
             });
 
@@ -536,6 +567,29 @@ impl<'a> SettingsView<'a> {
                     if ui.add(segmented_button("Off", !self.settings.show_replies_newest_first, ui)).clicked() {
                         self.settings.show_replies_newest_first = false;
                         action = Some(SettingsAction::SetRepliestNewestFirst(false));
+                    }
+                });
+            });
+
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Max media distance row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new("Show media up to distance")
+                    .text_style(NotedeckTextStyle::Body.text_style()));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+                    let mut max_distance = self.settings.max_media_distance;
+                    let slider_resp = ui.add(egui::Slider::new(&mut max_distance, 0..=5).show_value(true));
+                    if slider_resp.changed() {
+                        self.settings.max_media_distance = max_distance;
+                        action = Some(SettingsAction::SetMaxMediaDistance(max_distance));
                     }
                 });
             });
@@ -701,6 +755,7 @@ impl<'a> SettingsView<'a> {
                     ("Content", SettingsRoute::Others, Some(SettingsIcon::Emoji("📄"))),
                     ("Storage", SettingsRoute::Storage, Some(SettingsIcon::Emoji("💾"))),
                     ("Keys", SettingsRoute::Keys, Some(SettingsIcon::Image(key_image()))),
+                    ("Social Graph", SettingsRoute::SocialGraph, Some(SettingsIcon::Emoji("🕸️"))),
                 ]);
             });
 
@@ -902,6 +957,121 @@ impl<'a> SettingsView<'a> {
             });
     }
 
+    pub fn social_graph_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        let mut action = None;
+
+        if let Some(graph) = self.note_context.social_graph {
+            let (users, follows, mutes) = graph.size();
+
+            ui.add_space(16.0);
+            ui.heading("Social Graph Statistics");
+            ui.add_space(12.0);
+
+            egui::Grid::new("social_graph_stats")
+                .num_columns(2)
+                .spacing([40.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Total users:");
+                    ui.label(users.to_string());
+                    ui.end_row();
+
+                    ui.label("Follow relationships:");
+                    ui.label(follows.to_string());
+                    ui.end_row();
+
+                    ui.label("Mute relationships:");
+                    ui.label(mutes.to_string());
+                    ui.end_row();
+                });
+
+            ui.add_space(16.0);
+            ui.heading("Users by Follow Distance");
+            ui.add_space(8.0);
+
+            egui::Grid::new("distance_stats")
+                .num_columns(2)
+                .spacing([40.0, 8.0])
+                .show(ui, |ui| {
+                    for distance in 0..=5 {
+                        if let Ok(users_at_distance) = graph.get_users_by_follow_distance(distance) {
+                            let count = users_at_distance.len();
+                            if count > 0 {
+                                ui.label(format!("Distance {}:", distance));
+                                ui.label(count.to_string());
+                                ui.end_row();
+                            }
+                        }
+                    }
+                });
+
+            ui.add_space(20.0);
+            ui.heading("Web of Trust Badges");
+            ui.add_space(8.0);
+            ui.label("Profile pictures show colored checkmarks based on follow distance:");
+            ui.add_space(12.0);
+
+            egui::Grid::new("badge_legend")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(139, 92, 246), "● Purple");
+                    ui.label("You or users you follow");
+                    ui.end_row();
+
+                    ui.colored_label(egui::Color32::from_rgb(251, 146, 60), "● Orange");
+                    ui.label("Followed by 10+ of your follows");
+                    ui.end_row();
+
+                    ui.colored_label(egui::Color32::from_rgb(156, 163, 175), "● Gray");
+                    ui.label("Followed by 1-9 of your follows");
+                    ui.end_row();
+                });
+
+            ui.add_space(20.0);
+            ui.heading("Crawl Social Graph");
+            ui.add_space(8.0);
+            ui.label("Fetch contact lists to expand the social graph:");
+            ui.add_space(12.0);
+
+            let mut crawl_distance = ui.data_mut(|d| {
+                *d.get_temp_mut_or_insert_with(egui::Id::new("crawl_distance"), || 2u32)
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Max distance:");
+                let slider_resp = ui.add(egui::Slider::new(&mut crawl_distance, 0..=5));
+                if slider_resp.changed() {
+                    ui.data_mut(|d| d.insert_temp(egui::Id::new("crawl_distance"), crawl_distance));
+                }
+            });
+
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+                if ui.add(rounded_button("Crawl from local DB")).clicked() {
+                    action = Some(SettingsAction::CrawlSocialGraph {
+                        max_distance: crawl_distance,
+                        query_relays: false
+                    });
+                }
+
+                ui.add_space(8.0);
+
+                if ui.add(rounded_button("Crawl from relays")).clicked() {
+                    action = Some(SettingsAction::CrawlSocialGraph {
+                        max_distance: crawl_distance,
+                        query_relays: true
+                    });
+                }
+            });
+        } else {
+            ui.add_space(16.0);
+            ui.label("Social graph not initialized");
+        }
+
+        action
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, route: &SettingsRoute) -> BodyResponse<SettingsAction> {
         match route {
             SettingsRoute::Menu => {
@@ -930,6 +1100,11 @@ impl<'a> SettingsView<'a> {
                                 }
                                 SettingsRoute::Others => {
                                     if let Some(new_action) = self.other_options_section(ui) {
+                                        action = Some(new_action);
+                                    }
+                                }
+                                SettingsRoute::SocialGraph => {
+                                    if let Some(new_action) = self.social_graph_section(ui) {
                                         action = Some(new_action);
                                     }
                                 }
