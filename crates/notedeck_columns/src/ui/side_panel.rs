@@ -482,7 +482,7 @@ pub fn search_button_impl(color: egui::Color32, line_width: f32, is_active: bool
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
@@ -526,7 +526,10 @@ pub fn search_button_impl(color: egui::Color32, line_width: f32, is_active: bool
 
 pub fn search_button(current_route: Option<&Route>) -> impl Widget + '_ {
     let is_active = matches!(current_route, Some(Route::Search));
-    move |ui: &mut egui::Ui| search_button_impl(colors::MID_GRAY, 1.5, is_active).ui(ui)
+    move |ui: &mut egui::Ui| {
+        let icon_color = notedeck_ui::side_panel_icon_tint(ui);
+        search_button_impl(icon_color, 1.5, is_active).ui(ui)
+    }
 }
 
 // TODO: convert to responsive button when expanded side panel impl is finished
@@ -607,7 +610,7 @@ fn settings_button(current_route: Option<&Route>) -> impl Widget + '_ {
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
@@ -638,12 +641,12 @@ fn profile_button(current_route: Option<&Route>, pubkey: enostr::Pubkey) -> impl
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
 
-        let img = app_images::profile_image();
+        let img = app_images::profile_image().tint(notedeck_ui::side_panel_icon_tint(ui));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
         helper.take_animation_response()
@@ -665,7 +668,7 @@ fn wallet_button(current_route: Option<&Route>) -> impl Widget + '_ {
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
@@ -696,7 +699,7 @@ fn support_button(current_route: Option<&Route>) -> impl Widget + '_ {
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
@@ -727,7 +730,7 @@ fn home_button(current_route: Option<&Route>) -> impl Widget + '_ {
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
@@ -749,7 +752,7 @@ fn dave_button() -> impl Widget {
     move |ui: &mut egui::Ui| {
         let img_size = 24.0;
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let img = app_images::sparkle_image();
+        let img = app_images::sparkle_image().tint(notedeck_ui::side_panel_icon_tint(ui));
         let helper = AnimationHelper::new(ui, "dave-button", vec2(max_size, max_size));
         let cur_img_size = helper.scale_1d_pos(img_size);
         img.paint_at(ui, helper.get_animation_rect().shrink((max_size - cur_img_size) / 2.0));
@@ -769,10 +772,10 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
         } else if connected_count == 1 {
             egui::Color32::from_rgb(0xFF, 0xCC, 0x66)
         } else {
-            colors::MID_GRAY
+            notedeck_ui::side_panel_icon_tint(ui)
         }
     } else {
-        colors::MID_GRAY
+        notedeck_ui::side_panel_icon_tint(ui)
     };
 
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
@@ -826,12 +829,12 @@ fn messages_button(current_route: Option<&Route>) -> impl Widget + '_ {
             painter.circle(
                 helper.get_animation_rect().center(),
                 circle_radius,
-                ui.visuals().widgets.active.weak_bg_fill,
+                notedeck_ui::side_panel_active_bg(ui),
                 Stroke::NONE,
             );
         }
 
-        let icon_color = if is_active { ui.visuals().strong_text_color() } else { colors::MID_GRAY };
+        let icon_color = notedeck_ui::side_panel_icon_tint(ui);
         let line_width = helper.scale_1d_pos(1.5);
 
         let envelope_width = helper.scale_1d_pos(20.0);
