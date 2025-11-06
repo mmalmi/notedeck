@@ -310,33 +310,18 @@ fn profile_stats(
     ui: &mut egui::Ui,
     pubkey: &Pubkey,
     note_context: &mut NoteContext,
-    txn: &Transaction,
+    _txn: &Transaction,
 ) -> Option<ProfileViewAction> {
     let mut action = None;
 
-    let filter = nostrdb::Filter::new()
-        .authors([pubkey.bytes()])
-        .kinds([3])
-        .limit(1)
-        .build();
+    let pubkey_hex = hex::encode(pubkey.bytes());
 
-    let mut count = 0;
-    let following_count = {
-        if let Ok(results) = note_context.ndb.query(txn, &[filter], 1) {
-            if let Some(result) = results.first() {
-                for tag in result.note.tags() {
-                    if tag.count() >= 2 {
-                        if let Some("p") = tag.get_str(0) {
-                            if tag.get_id(1).is_some() {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        count
+    let (following_count, follower_count) = if let Some(graph) = note_context.social_graph {
+        let following = graph.following_count(&pubkey_hex).unwrap_or(0);
+        let followers = graph.follower_count(&pubkey_hex).unwrap_or(0);
+        (following, followers)
+    } else {
+        (0, 0)
     };
 
     ui.horizontal(|ui| {
@@ -368,6 +353,24 @@ fn profile_stats(
 
         if resp.clicked() || resp2.clicked() {
             action = Some(ProfileViewAction::ShowFollowing(*pubkey));
+        }
+
+        ui.add_space(16.0);
+
+        let follower_resp = ui.label(
+            RichText::new(format!("{} ", follower_count))
+                .size(notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                .color(ui.visuals().text_color()),
+        ).on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        let follower_label = ui.label(
+            RichText::new("followers")
+                .size(notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                .color(ui.visuals().weak_text_color()),
+        ).on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if follower_resp.clicked() || follower_label.clicked() {
+            action = Some(ProfileViewAction::ShowFollowers(*pubkey));
         }
 
         let selected = note_context.accounts.get_selected_account();

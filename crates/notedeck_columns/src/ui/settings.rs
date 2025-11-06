@@ -7,7 +7,7 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr,
-    ui::{is_narrow, richtext_small},
+    ui::richtext_small,
     Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
     SettingsHandler, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
@@ -928,6 +928,26 @@ impl<'a> SettingsView<'a> {
                     ui.end_row();
                 });
 
+            ui.add_space(16.0);
+            ui.heading("Users by Follow Distance");
+            ui.add_space(8.0);
+
+            egui::Grid::new("distance_stats")
+                .num_columns(2)
+                .spacing([40.0, 8.0])
+                .show(ui, |ui| {
+                    for distance in 0..=5 {
+                        if let Ok(users_at_distance) = graph.get_users_by_follow_distance(distance) {
+                            let count = users_at_distance.len();
+                            if count > 0 {
+                                ui.label(format!("Distance {}:", distance));
+                                ui.label(count.to_string());
+                                ui.end_row();
+                            }
+                        }
+                    }
+                });
+
             ui.add_space(20.0);
             ui.heading("Web of Trust Badges");
             ui.add_space(8.0);
@@ -947,7 +967,7 @@ impl<'a> SettingsView<'a> {
                     ui.end_row();
 
                     ui.colored_label(egui::Color32::from_rgb(156, 163, 175), "● Gray");
-                    ui.label("Other 2nd degree contacts");
+                    ui.label("Followed by 1-9 of your follows");
                     ui.end_row();
                 });
         } else {

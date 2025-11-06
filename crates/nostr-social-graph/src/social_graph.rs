@@ -266,6 +266,16 @@ impl SocialGraph {
         Ok(followers.get(&id).map_or(0, |s| s.len()))
     }
 
+    pub fn following_count(&self, address: &str) -> Result<usize, SocialGraphError> {
+        let id = match self.ids.id(address) {
+            Some(id) => id,
+            None => return Ok(0),
+        };
+
+        let followed = self.followed_by_user.read().unwrap();
+        Ok(followed.get(&id).map_or(0, |s| s.len()))
+    }
+
     pub fn followed_by_friends_count(&self, address: &str) -> Result<usize, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
