@@ -484,6 +484,7 @@ impl Notedeck {
             job_pool: &mut self.job_pool,
             i18n: &mut self.i18n,
             session_manager: &self.session_manager,
+            session_event_tx: &self.session_event_tx,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }

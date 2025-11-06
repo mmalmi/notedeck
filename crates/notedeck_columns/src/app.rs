@@ -19,6 +19,7 @@ use crate::{
 use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, PoolRelay, Pubkey, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::Transaction;
+use nostr::JsonUtil;
 use notedeck::{
     tr, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse, DataPath, DataPathType,
     FilterState, Images, JobsCache, Localization, NotedeckOptions, SettingsHandler, UnknownIds,
@@ -357,6 +358,25 @@ fn handle_eose(
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(_subid, ev) => {
+            // Route to SessionManager if it's a session-related event (kinds 30078, 443)
+            if let Some(tx) = &ctx.session_event_tx {
+                if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
+                    if let Ok(note_id) = enostr::NoteId::from_hex(ev) {
+                        if let Ok(note) = ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
+                            let kind = note.kind();
+                            if kind == 30078 || kind == 443 {
+                                if let Ok(json) = note.json() {
+                                    if let Ok(event) = nostr::Event::from_json(&json) {
+                                        let unsigned = nostr::UnsignedEvent::from(event);
+                                        let _ = tx.send(nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(unsigned));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
                 relay
             } else {

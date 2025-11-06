@@ -22,6 +22,7 @@ notedeck = { workspace = true }
 tokenator = { workspace = true }
 bitflags = { workspace = true }
 nostr-double-ratchet = { path = "../nostr-double-ratchet" }
+nostr = { workspace = true }
 dirs = { workspace = true }
 eframe = { workspace = true }
 thiserror = { workspace = true }

@@ -3697,6 +3697,7 @@ dependencies = [
  "indexmap 2.9.0",
  "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "ndk-context",
+ "nostr 0.37.0",
  "nostr-double-ratchet",
  "nostrdb",
  "notedeck",

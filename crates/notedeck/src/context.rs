@@ -7,7 +7,7 @@ use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
 use nostrdb::Ndb;
-use nostr_double_ratchet::SessionManager;
+use nostr_double_ratchet::{SessionManager, SessionManagerEvent};
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
@@ -32,6 +32,7 @@ pub struct AppContext<'a> {
     pub job_pool: &'a mut JobPool,
     pub i18n: &'a mut Localization,
     pub session_manager: &'a Option<Arc<SessionManager>>,
+    pub session_event_tx: &'a Option<crossbeam_channel::Sender<SessionManagerEvent>>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,
