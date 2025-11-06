@@ -68,6 +68,7 @@ rfd = "0.15"
 [dev-dependencies]
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
+egui_kittest = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809", features = ["snapshot", "wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"

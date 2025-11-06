@@ -25,7 +25,7 @@ bech32 = { version = "0.11", default-features = false }
 bitflags = "2.5.0"
 dirs = "5.0.1"
 eframe = { version = "0.31.1", default-features = false, features = [ "wgpu", "wayland", "x11", "android-game-activity" ] }
-egui = { version = "0.31.1", features = ["serde"] }
+egui = { version = "0.31.1", features = ["serde", "accesskit"] }
 egui-wgpu = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui-winit = { version = "0.31.1", features = ["android-game-activity", "clipboard"] }
@@ -108,12 +108,13 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "e05638c40ef734312b3b3e36397d389d0a78b10b" }
+egui = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+eframe = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+egui-winit = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+egui-wgpu = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+egui_extras = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+epaint = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
+egui_kittest = { git = "https://github.com/mmalmi/egui", rev = "c12e3b73ff5ebec0a9754663d316d423a300f809" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 #winit = { git = "https://github.com/damus-io/winit", rev = "701a43d3c6479b0a3869acd2cebbfd410d399a59" }
