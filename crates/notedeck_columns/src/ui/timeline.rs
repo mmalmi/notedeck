@@ -472,11 +472,25 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
             return RenderEntryResponse::Success(None);
         }
 
+        let mut note_options = self.note_options;
+
+        // Check social graph distance to decide if we should hide media
+        if let Some(graph) = self.note_context.social_graph {
+            let distance = graph.get_follow_distance(underlying_note.pubkey()).unwrap_or(1000);
+
+            if distance > self.note_context.max_media_distance {
+                note_options = note_options.union(NoteOptions::HideMedia);
+            } else {
+                // Explicitly remove HideMedia if within distance
+                note_options = note_options.difference(NoteOptions::HideMedia);
+            }
+        }
+
         match entry {
             NoteUnit::Single(_) => render_note(
                 ui,
                 self.note_context,
-                self.note_options,
+                note_options,
                 self.jobs,
                 &underlying_note,
             ),

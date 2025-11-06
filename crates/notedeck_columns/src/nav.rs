@@ -8,7 +8,7 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
     route::{Route, Router, SingletonRouter},
-    subscriptions::Subscriptions,
+    subscriptions::{new_sub_id, SubKind, Subscriptions},
     timeline::{
         kind::ListKind,
         route::{render_thread_route, render_timeline_route},
@@ -36,14 +36,14 @@ use egui::{scroll_area::ScrollAreaOutput, ScrollArea};
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::{ProfileState, RelayPool};
+use enostr::{ClientMessage, ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteCache, NoteContext,
     RelayAction,
 };
 use notedeck_ui::NoteOptions;
-use tracing::error;
+use tracing::{error, info};
 
 /// The result of processing a nav response
 pub enum ProcessNavResult {
@@ -108,6 +108,7 @@ impl SwitchingAction {
                         if let Some(graph) = ctx.social_graph {
                             ctx.accounts.update_social_graph_root(graph);
                         }
+
 
                         let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
                         // this is cringe but we're gonna get a new sub manager soon...
@@ -336,6 +337,77 @@ fn process_nav_resp(
 
 /// We are navigating to edit profile, prepare the profile state
 /// if we don't have it
+fn crawl_social_graph(
+    app: &mut Damus,
+    ctx: &mut AppContext,
+    max_distance: u32,
+    query_relays: bool,
+) {
+    let Some(graph) = ctx.social_graph else {
+        return;
+    };
+
+    if query_relays {
+        let txn = Transaction::new(ctx.ndb).expect("txn");
+        match graph.get_users_missing_contact_lists(max_distance, ctx.ndb, &txn) {
+            Ok(missing) => {
+                if missing.is_empty() {
+                    info!("No missing contact lists for distance 0-{}", max_distance);
+                    return;
+                }
+
+                info!("Fetching {} missing contact lists from relays (batched)", missing.len());
+
+                let mut authors = Vec::new();
+                for user_hex in missing {
+                    if let Ok(pk_bytes) = hex::decode(&user_hex) {
+                        if pk_bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&pk_bytes);
+                            authors.push(arr);
+                        }
+                    }
+                }
+
+                if authors.is_empty() {
+                    return;
+                }
+
+                const BATCH_SIZE: usize = 500;
+                let total_batches = (authors.len() + BATCH_SIZE - 1) / BATCH_SIZE;
+
+                for (batch_idx, chunk) in authors.chunks(BATCH_SIZE).enumerate() {
+                    let filter = enostr::Filter::new()
+                        .kinds([3, 10000])
+                        .authors(chunk)
+                        .build();
+
+                    let subid = new_sub_id();
+                    app.subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
+                    let msg = ClientMessage::req(subid, vec![filter]);
+                    ctx.pool.send(&msg);
+
+                    info!("Sent batch {}/{} ({} authors)", batch_idx + 1, total_batches, chunk.len());
+                }
+
+                info!("Queued {} batches of contact list requests", total_batches);
+            }
+            Err(e) => {
+                error!("Error getting missing contact lists: {:?}", e);
+            }
+        }
+    } else {
+        info!("Crawling social graph from local DB to distance {}", max_distance);
+        let txn = Transaction::new(ctx.ndb).expect("txn");
+        if let Err(e) = graph.populate_from_ndb(ctx.ndb, &txn) {
+            error!("Error crawling from local DB: {:?}", e);
+        } else {
+            let (users, follows, mutes) = graph.size();
+            info!("Social graph updated: {} users, {} follows, {} mutes", users, follows, mutes);
+        }
+    }
+}
+
 fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damus, col: usize) {
     let pk = {
         let Route::EditProfile(pk) = app.columns(accounts).column(col).router().top() else {
@@ -566,7 +638,13 @@ fn process_render_nav_action(
             None
         }
         RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+            match &action {
+                SettingsAction::CrawlSocialGraph { max_distance, query_relays } => {
+                    crawl_social_graph(app, ctx, *max_distance, *query_relays);
+                    None
+                }
+                _ => action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+            }
         }
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
@@ -639,6 +717,7 @@ fn render_nav_body(
         global_wallet: ctx.global_wallet,
         session_manager: ctx.session_manager,
         social_graph: ctx.social_graph.as_ref(),
+        max_media_distance: ctx.settings.max_media_distance(),
     };
 
     match top {
@@ -1009,8 +1088,51 @@ fn render_nav_body(
                     }
                 })
         }
-        Route::FollowedBy(_pubkey) => {
-            BodyResponse::none()
+        Route::FollowedBy(pubkey) => {
+            let cache_id = egui::Id::new(("followers_contacts_cache", pubkey));
+
+            let contacts = ui.ctx().data_mut(|d| {
+                d.get_temp::<Vec<enostr::Pubkey>>(cache_id)
+            });
+
+            let (txn, contacts) = if let Some(cached) = contacts {
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                (txn, cached)
+            } else {
+                let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                let mut contacts = vec![];
+
+                if let Some(graph) = note_context.social_graph {
+                    if let Ok(followers) = graph.get_followers_by_user(pubkey.bytes()) {
+                        for follower_bytes in followers {
+                            contacts.push(enostr::Pubkey::new(follower_bytes));
+                        }
+                    }
+                }
+
+                contacts.sort_by_cached_key(|pk| {
+                    ctx.ndb
+                        .get_profile_by_pubkey(&txn, pk.bytes())
+                        .ok()
+                        .and_then(|p| {
+                            notedeck::name::get_display_name(Some(&p))
+                                .display_name
+                                .map(|s| s.to_lowercase())
+                        })
+                        .unwrap_or_else(|| "zzz".to_string())
+                });
+
+                ui.ctx().data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+                (txn, contacts)
+            };
+
+            crate::ui::profile::ContactsListView::new(pubkey, contacts, &mut note_context, &txn)
+                .ui(ui)
+                .map_output(|action| match action {
+                    crate::ui::profile::ContactsListAction::OpenProfile(pk) => {
+                        RenderNavAction::NoteAction(NoteAction::Profile(pk))
+                    }
+                })
         }
         Route::Messages => {
             let action = None;

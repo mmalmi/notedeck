@@ -260,17 +260,24 @@ fn subscribe_to_wot_contact_lists(
         return;
     }
 
-    info!("Subscribing to contact lists for {} WoT users", authors.len());
+    info!("Subscribing to contact lists for {} users (batched)", authors.len());
 
-    let filter = enostr::Filter::new()
-        .kinds([3, 10000])
-        .authors(&authors)
-        .build();
+    const BATCH_SIZE: usize = 500;
+    let total_batches = (authors.len() + BATCH_SIZE - 1) / BATCH_SIZE;
 
-    let subid = new_sub_id();
-    subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
-    let msg = ClientMessage::req(subid, vec![filter]);
-    pool.send(&msg);
+    for (batch_idx, chunk) in authors.chunks(BATCH_SIZE).enumerate() {
+        let filter = enostr::Filter::new()
+            .kinds([3, 10000])
+            .authors(chunk)
+            .build();
+
+        let subid = new_sub_id();
+        subscriptions.subs.insert(subid.clone(), SubKind::ContactLists);
+        let msg = ClientMessage::req(subid, vec![filter]);
+        pool.send(&msg);
+
+        info!("Subscribed batch {}/{} ({} authors)", batch_idx + 1, total_batches, chunk.len());
+    }
 }
 
 #[profiling::function]
@@ -428,28 +435,33 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                         // Update social graph for contact/mute lists
                         if (kind == 3 || kind == 10000) && ctx.social_graph.is_some() {
                             if let Some(graph) = ctx.social_graph {
-                                let pubkey = hex::encode(note.pubkey());
+                                let pubkey = note.pubkey();
                                 let created_at = note.created_at();
 
-                                let mut tags = Vec::new();
+                                let mut p_tags = Vec::new();
                                 for tag in note.tags().iter() {
                                     if tag.count() >= 2 {
                                         if let Some("p") = tag.get_str(0) {
                                             if let Some(pk_bytes) = tag.get_id(1) {
-                                                tags.push(("p".to_string(), vec![hex::encode(pk_bytes)]));
+                                                p_tags.push(*pk_bytes);
                                             }
                                         }
                                     }
                                 }
 
                                 let result = if kind == 3 {
-                                    graph.handle_contact_list(&pubkey, &tags, created_at)
+                                    graph.handle_contact_list(pubkey, &p_tags, created_at)
                                 } else {
-                                    graph.handle_mute_list(&pubkey, &tags, created_at)
+                                    graph.handle_mute_list(pubkey, &p_tags, created_at)
                                 };
 
                                 if let Err(e) = result {
                                     debug!("Error updating social graph: {:?}", e);
+                                } else if kind == 3 {
+                                    // Recalculate distances after new contact list
+                                    if let Err(e) = graph.recalculate_follow_distances() {
+                                        debug!("Error recalculating distances: {:?}", e);
+                                    }
                                 }
                             }
                         }

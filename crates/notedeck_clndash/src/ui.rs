@@ -56,6 +56,7 @@ pub fn note_hover_ui(
             global_wallet: ctx.global_wallet,
             session_manager: ctx.session_manager,
             social_graph: ctx.social_graph.as_ref(),
+            max_media_distance: 3,
         };
 
         let mut jobs = notedeck::JobsCache::default();

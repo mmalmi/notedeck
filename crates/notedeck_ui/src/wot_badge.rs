@@ -26,24 +26,21 @@ pub fn get_wot_badge(
     let logged_in = logged_in_pubkey?;
     let graph = social_graph?;
 
-    let pubkey_hex = hex::encode(pubkey.bytes());
-    let logged_in_hex = hex::encode(logged_in.bytes());
-
     // Check if muted
-    if let Ok(is_muted) = graph.is_muted(&logged_in_hex, &pubkey_hex) {
+    if let Ok(is_muted) = graph.is_muted(logged_in.bytes(), pubkey.bytes()) {
         if is_muted {
             return None;
         }
     }
 
-    let distance = graph.get_follow_distance(&pubkey_hex).ok()?;
+    let distance = graph.get_follow_distance(pubkey.bytes()).ok()?;
 
     match distance {
         0 => Some(BadgeColor::Purple),  // Self
         1 => Some(BadgeColor::Purple),  // Following
         2 => {
             // Check how many friends follow this user
-            let friends_count = graph.followed_by_friends_count(&pubkey_hex).ok().unwrap_or(0);
+            let friends_count = graph.followed_by_friends_count(pubkey.bytes()).ok().unwrap_or(0);
             if friends_count >= 10 {
                 Some(BadgeColor::Orange)
             } else if friends_count > 0 {

@@ -314,11 +314,9 @@ fn profile_stats(
 ) -> Option<ProfileViewAction> {
     let mut action = None;
 
-    let pubkey_hex = hex::encode(pubkey.bytes());
-
     let (following_count, follower_count) = if let Some(graph) = note_context.social_graph {
-        let following = graph.following_count(&pubkey_hex).unwrap_or(0);
-        let followers = graph.follower_count(&pubkey_hex).unwrap_or(0);
+        let following = graph.following_count(pubkey.bytes()).unwrap_or(0);
+        let followers = graph.follower_count(pubkey.bytes()).unwrap_or(0);
         (following, followers)
     } else {
         (0, 0)
@@ -364,7 +362,11 @@ fn profile_stats(
         ).on_hover_cursor(egui::CursorIcon::PointingHand);
 
         let follower_label = ui.label(
-            RichText::new("followers")
+            RichText::new(tr!(
+                note_context.i18n,
+                "known followers",
+                "Label for number of known followers"
+            ))
                 .size(notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
                 .color(ui.visuals().weak_text_color()),
         ).on_hover_cursor(egui::CursorIcon::PointingHand);

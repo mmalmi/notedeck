@@ -485,8 +485,8 @@ fn render_blur_text(
     let info_galley = painter.layout(
         tr!(
             i18n,
-            "Media from someone you don't follow",
-            "Text shown on blurred media from unfollowed users"
+            "Media from outside your web of trust",
+            "Text shown on blurred media from users beyond max distance"
         )
         .to_owned(),
         animation_fontid.clone(),

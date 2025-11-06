@@ -262,11 +262,11 @@ impl Accounts {
 
     pub fn update_social_graph_root(&self, social_graph: &std::sync::Arc<nostr_social_graph::SocialGraph>) {
         let selected = self.get_selected_account();
-        let root_pubkey = hex::encode(selected.key.pubkey.bytes());
-        if let Err(e) = social_graph.set_root(&root_pubkey) {
+        let root_pubkey = selected.key.pubkey.bytes();
+        if let Err(e) = social_graph.set_root(root_pubkey) {
             tracing::error!("Failed to update social graph root: {}", e);
         } else {
-            tracing::info!("Social graph root updated to {}", root_pubkey);
+            tracing::info!("Social graph root updated to {}", hex::encode(root_pubkey));
         }
     }
 

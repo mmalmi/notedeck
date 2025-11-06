@@ -18,7 +18,7 @@ pub struct SocialGraph {
 }
 
 impl SocialGraph {
-    pub fn new(root: &str) -> Result<Self, SocialGraphError> {
+    pub fn new(root: &[u8; 32]) -> Result<Self, SocialGraphError> {
         let ids = UniqueIds::new();
         let root_id = ids.get_or_create_id(root)?;
 
@@ -44,12 +44,12 @@ impl SocialGraph {
         })
     }
 
-    pub fn get_root(&self) -> Result<String, SocialGraphError> {
+    pub fn get_root(&self) -> Result<[u8; 32], SocialGraphError> {
         let root = *self.root.read().unwrap();
-        self.ids.str(root)
+        self.ids.bytes(root)
     }
 
-    pub fn set_root(&self, root: &str) -> Result<(), SocialGraphError> {
+    pub fn set_root(&self, root: &[u8; 32]) -> Result<(), SocialGraphError> {
         let root_id = self.ids.get_or_create_id(root)?;
         *self.root.write().unwrap() = root_id;
         self.recalculate_follow_distances()?;
@@ -87,7 +87,7 @@ impl SocialGraph {
         Ok(())
     }
 
-    pub fn handle_contact_list(&self, pubkey: &str, tags: &[(String, Vec<String>)], created_at: u64) -> Result<(), SocialGraphError> {
+    pub fn handle_contact_list(&self, pubkey: &[u8; 32], p_tags: &[[u8; 32]], created_at: u64) -> Result<(), SocialGraphError> {
         let author = self.ids.get_or_create_id(pubkey)?;
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -108,16 +108,10 @@ impl SocialGraph {
         }
 
         let mut followed_in_event = HashSet::new();
-        for (tag_name, values) in tags {
-            if tag_name == "p" {
-                if let Some(pubkey) = values.first() {
-                    if pubkey.len() == 64 && pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-                        let followed_user = self.ids.get_or_create_id(pubkey)?;
-                        if followed_user != author {
-                            followed_in_event.insert(followed_user);
-                        }
-                    }
-                }
+        for pk in p_tags {
+            let followed_user = self.ids.get_or_create_id(pk)?;
+            if followed_user != author {
+                followed_in_event.insert(followed_user);
             }
         }
 
@@ -160,11 +154,11 @@ impl SocialGraph {
             }
         }
 
-        self.recalculate_follow_distances()?;
+        // Don't recalculate per-event - caller should batch
         Ok(())
     }
 
-    pub fn handle_mute_list(&self, pubkey: &str, tags: &[(String, Vec<String>)], created_at: u64) -> Result<(), SocialGraphError> {
+    pub fn handle_mute_list(&self, pubkey: &[u8; 32], p_tags: &[[u8; 32]], created_at: u64) -> Result<(), SocialGraphError> {
         let author = self.ids.get_or_create_id(pubkey)?;
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -185,16 +179,10 @@ impl SocialGraph {
         }
 
         let mut muted_in_event = HashSet::new();
-        for (tag_name, values) in tags {
-            if tag_name == "p" {
-                if let Some(pubkey) = values.first() {
-                    if pubkey.len() == 64 && pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-                        let muted_user = self.ids.get_or_create_id(pubkey)?;
-                        if muted_user != author {
-                            muted_in_event.insert(muted_user);
-                        }
-                    }
-                }
+        for pk in p_tags {
+            let muted_user = self.ids.get_or_create_id(pk)?;
+            if muted_user != author {
+                muted_in_event.insert(muted_user);
             }
         }
 
@@ -230,7 +218,7 @@ impl SocialGraph {
         Ok(())
     }
 
-    pub fn is_following(&self, follower: &str, followed_user: &str) -> Result<bool, SocialGraphError> {
+    pub fn is_following(&self, follower: &[u8; 32], followed_user: &[u8; 32]) -> Result<bool, SocialGraphError> {
         let followed_user_id = match self.ids.id(followed_user) {
             Some(id) => id,
             None => return Ok(false),
@@ -246,7 +234,7 @@ impl SocialGraph {
             .unwrap_or(false))
     }
 
-    pub fn get_follow_distance(&self, user: &str) -> Result<u32, SocialGraphError> {
+    pub fn get_follow_distance(&self, user: &[u8; 32]) -> Result<u32, SocialGraphError> {
         let user_id = match self.ids.id(user) {
             Some(id) => id,
             None => return Ok(1000),
@@ -256,7 +244,7 @@ impl SocialGraph {
         Ok(distances.get(&user_id).copied().unwrap_or(1000))
     }
 
-    pub fn follower_count(&self, address: &str) -> Result<usize, SocialGraphError> {
+    pub fn follower_count(&self, address: &[u8; 32]) -> Result<usize, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(0),
@@ -266,7 +254,7 @@ impl SocialGraph {
         Ok(followers.get(&id).map_or(0, |s| s.len()))
     }
 
-    pub fn following_count(&self, address: &str) -> Result<usize, SocialGraphError> {
+    pub fn following_count(&self, address: &[u8; 32]) -> Result<usize, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(0),
@@ -276,7 +264,7 @@ impl SocialGraph {
         Ok(followed.get(&id).map_or(0, |s| s.len()))
     }
 
-    pub fn followed_by_friends_count(&self, address: &str) -> Result<usize, SocialGraphError> {
+    pub fn followed_by_friends_count(&self, address: &[u8; 32]) -> Result<usize, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(0),
@@ -301,7 +289,7 @@ impl SocialGraph {
         Ok(count)
     }
 
-    pub fn followed_by_friends(&self, address: &str) -> Result<HashSet<String>, SocialGraphError> {
+    pub fn followed_by_friends(&self, address: &[u8; 32]) -> Result<HashSet<[u8; 32]>, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(HashSet::new()),
@@ -316,8 +304,8 @@ impl SocialGraph {
             if let Some(root_follows) = followed.get(&root) {
                 for &follower in follower_set {
                     if root_follows.contains(&follower) {
-                        if let Ok(str_id) = self.ids.str(follower) {
-                            set.insert(str_id);
+                        if let Ok(bytes) = self.ids.bytes(follower) {
+                            set.insert(bytes);
                         }
                     }
                 }
@@ -327,7 +315,7 @@ impl SocialGraph {
         Ok(set)
     }
 
-    pub fn get_followed_by_user(&self, user: &str, include_self: bool) -> Result<HashSet<String>, SocialGraphError> {
+    pub fn get_followed_by_user(&self, user: &[u8; 32], include_self: bool) -> Result<HashSet<[u8; 32]>, SocialGraphError> {
         let user_id = match self.ids.id(user) {
             Some(id) => id,
             None => return Ok(HashSet::new()),
@@ -338,19 +326,19 @@ impl SocialGraph {
 
         if let Some(followed_set) = followed.get(&user_id) {
             for &id in followed_set {
-                if let Ok(str_id) = self.ids.str(id) {
-                    set.insert(str_id);
+                if let Ok(bytes) = self.ids.bytes(id) {
+                    set.insert(bytes);
                 }
             }
         }
 
         if include_self {
-            set.insert(user.to_string());
+            set.insert(*user);
         }
         Ok(set)
     }
 
-    pub fn get_followers_by_user(&self, address: &str) -> Result<HashSet<String>, SocialGraphError> {
+    pub fn get_followers_by_user(&self, address: &[u8; 32]) -> Result<HashSet<[u8; 32]>, SocialGraphError> {
         let user_id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(HashSet::new()),
@@ -361,22 +349,22 @@ impl SocialGraph {
 
         if let Some(follower_set) = followers.get(&user_id) {
             for &id in follower_set {
-                if let Ok(str_id) = self.ids.str(id) {
-                    set.insert(str_id);
+                if let Ok(bytes) = self.ids.bytes(id) {
+                    set.insert(bytes);
                 }
             }
         }
         Ok(set)
     }
 
-    pub fn get_users_by_follow_distance(&self, distance: u32) -> Result<HashSet<String>, SocialGraphError> {
+    pub fn get_users_by_follow_distance(&self, distance: u32) -> Result<HashSet<[u8; 32]>, SocialGraphError> {
         let mut result = HashSet::new();
         let users_by_distance = self.users_by_follow_distance.read().unwrap();
 
         if let Some(users) = users_by_distance.get(&distance) {
             for &user_id in users {
-                if let Ok(str_id) = self.ids.str(user_id) {
-                    result.insert(str_id);
+                if let Ok(bytes) = self.ids.bytes(user_id) {
+                    result.insert(bytes);
                 }
             }
         }
@@ -384,7 +372,7 @@ impl SocialGraph {
         Ok(result)
     }
 
-    pub fn is_muted(&self, muter: &str, muted_user: &str) -> Result<bool, SocialGraphError> {
+    pub fn is_muted(&self, muter: &[u8; 32], muted_user: &[u8; 32]) -> Result<bool, SocialGraphError> {
         let muted_user_id = match self.ids.id(muted_user) {
             Some(id) => id,
             None => return Ok(false),
@@ -400,7 +388,7 @@ impl SocialGraph {
             .unwrap_or(false))
     }
 
-    pub fn muted_by_friends_count(&self, address: &str) -> Result<usize, SocialGraphError> {
+    pub fn muted_by_friends_count(&self, address: &[u8; 32]) -> Result<usize, SocialGraphError> {
         let id = match self.ids.id(address) {
             Some(id) => id,
             None => return Ok(0),
@@ -425,7 +413,7 @@ impl SocialGraph {
         Ok(count)
     }
 
-    pub fn get_muted_by_user(&self, user: &str) -> Result<HashSet<String>, SocialGraphError> {
+    pub fn get_muted_by_user(&self, user: &[u8; 32]) -> Result<HashSet<[u8; 32]>, SocialGraphError> {
         let user_id = match self.ids.id(user) {
             Some(id) => id,
             None => return Ok(HashSet::new()),
@@ -436,8 +424,8 @@ impl SocialGraph {
 
         if let Some(muted_set) = muted_by.get(&user_id) {
             for &id in muted_set {
-                if let Ok(str_id) = self.ids.str(id) {
-                    set.insert(str_id);
+                if let Ok(bytes) = self.ids.bytes(id) {
+                    set.insert(bytes);
                 }
             }
         }
@@ -456,10 +444,42 @@ impl SocialGraph {
         (distances.len(), follows, mutes)
     }
 
-    pub fn populate_from_ndb(&self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) -> Result<(), SocialGraphError> {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+    pub fn get_users_missing_contact_lists(&self, max_distance: u32, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) -> Result<Vec<[u8; 32]>, SocialGraphError> {
+        let mut missing = Vec::new();
 
-        let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), SocialGraphError> {
+        for distance in 0..=max_distance {
+            if let Ok(users) = self.get_users_by_follow_distance(distance) {
+                for user_bytes in users {
+                    if let Some(user_id) = self.ids.id(&user_bytes) {
+                        let has_contact_list = {
+                            let created_at = self.follow_list_created_at.read().unwrap();
+                            created_at.contains_key(&user_id)
+                        };
+
+                        if !has_contact_list {
+                            let filter = nostrdb::Filter::new()
+                                .authors([&user_bytes])
+                                .kinds([3])
+                                .limit(1)
+                                .build();
+
+                            let has_in_ndb = ndb.query(txn, &[filter], 1)
+                                .map(|r| !r.is_empty())
+                                .unwrap_or(false);
+
+                            if !has_in_ndb {
+                                missing.push(user_bytes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(missing)
+    }
+
+    pub fn populate_from_ndb(&self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) -> Result<(), SocialGraphError> {
 
             let contact_filter = nostrdb::Filter::new()
                 .kinds(vec![3])
@@ -470,36 +490,35 @@ impl SocialGraph {
                 .build();
 
             let filters = vec![contact_filter, mute_filter];
-            let results = ndb.query(txn, &filters, 100000)
+            let results = ndb.query(txn, &filters, 10000)
                 .map_err(|e| SocialGraphError::Serialization(e.to_string()))?;
 
             debug!("Populating social graph from {} events", results.len());
+            let start = std::time::Instant::now();
+            let mut event_count = 0;
 
-            let root_hex = {
+            let root_bytes = {
                 let root_id = *self.root.read().unwrap();
-                self.ids.str(root_id).ok()
+                self.ids.bytes(root_id).ok()
             };
 
             // Process root's contact list first
-            if let Some(root_pk) = &root_hex {
+            if let Some(root_pk) = root_bytes {
                 for result in &results {
                     if let Ok(note) = ndb.get_note_by_key(txn, result.note_key) {
-                        let pubkey = hex::encode(note.pubkey());
-                        if &pubkey == root_pk && note.kind() == 3 {
-                            let mut tags = Vec::new();
+                        if note.pubkey() == &root_pk && note.kind() == 3 {
+                            let mut p_tags = Vec::new();
                             for tag in note.tags().iter() {
-                                if tag.count() < 2 {
-                                    continue;
-                                }
-                                if let Some("p") = tag.get_str(0) {
-                                    if let Some(pk_bytes) = tag.get_id(1) {
-                                        let pk_hex = hex::encode(pk_bytes);
-                                        tags.push(("p".to_string(), vec![pk_hex]));
+                                if tag.count() >= 2 {
+                                    if let Some("p") = tag.get_str(0) {
+                                        if let Some(pk_bytes) = tag.get_id(1) {
+                                            p_tags.push(*pk_bytes);
+                                        }
                                     }
                                 }
                             }
-                            debug!("Processing root contact list with {} p tags", tags.len());
-                            if let Err(e) = self.handle_contact_list(&pubkey, &tags, note.created_at()) {
+                            debug!("Processing root contact list with {} p tags", p_tags.len());
+                            if let Err(e) = self.handle_contact_list(&root_pk, &p_tags, note.created_at()) {
                                 debug!("Error processing root contact list: {:?}", e);
                             }
                             break;
@@ -511,52 +530,52 @@ impl SocialGraph {
             // Process all other events
             for result in results {
                 if let Ok(note) = ndb.get_note_by_key(txn, result.note_key) {
-                    let pubkey = hex::encode(note.pubkey());
+                    let pubkey = note.pubkey();
                     let created_at = note.created_at();
                     let kind = note.kind();
 
                     // Skip root's contact list (already processed)
-                    if let Some(root_pk) = &root_hex {
-                        if &pubkey == root_pk && kind == 3 {
+                    if let Some(root_pk) = root_bytes {
+                        if pubkey == &root_pk && kind == 3 {
                             continue;
                         }
                     }
 
-                    let mut tags = Vec::new();
+                    let mut p_tags = Vec::new();
                     for tag in note.tags().iter() {
                         if tag.count() >= 2 {
                             if let Some("p") = tag.get_str(0) {
                                 if let Some(pk_bytes) = tag.get_id(1) {
-                                    let pk_hex = hex::encode(pk_bytes);
-                                    tags.push(("p".to_string(), vec![pk_hex]));
+                                    p_tags.push(*pk_bytes);
                                 }
                             }
                         }
                     }
 
                     if kind == 3 {
-                        if let Err(e) = self.handle_contact_list(&pubkey, &tags, created_at) {
-                            debug!("Error processing contact list for {}: {:?}", &pubkey[..8], e);
+                        if let Err(e) = self.handle_contact_list(pubkey, &p_tags, created_at) {
+                            debug!("Error processing contact list: {:?}", e);
+                        } else {
+                            event_count += 1;
+                            if event_count % 100 == 0 {
+                                debug!("Processed {} contact lists...", event_count);
+                            }
                         }
                     } else if kind == 10000 {
-                        if let Err(e) = self.handle_mute_list(&pubkey, &tags, created_at) {
-                            debug!("Error processing mute list for {}: {:?}", &pubkey[..8], e);
+                        if let Err(e) = self.handle_mute_list(pubkey, &p_tags, created_at) {
+                            debug!("Error processing mute list: {:?}", e);
                         }
                     }
                 }
             }
 
-            let (users, follows, mutes) = self.size();
-            debug!("Social graph populated: {} users, {} follows, {} mutes", users, follows, mutes);
-            Ok(())
-        }));
+            let recalc_start = std::time::Instant::now();
+            debug!("Recalculating follow distances...");
+            self.recalculate_follow_distances()?;
+            debug!("Recalculation took {:?}", recalc_start.elapsed());
 
-        match result {
-            Ok(r) => r,
-            Err(_) => {
-                debug!("Panic during social graph population");
-                Err(SocialGraphError::Serialization("Panic during population".to_string()))
-            }
-        }
+        let (users, follows, mutes) = self.size();
+        debug!("Social graph populated: {} users, {} follows, {} mutes in {:?}", users, follows, mutes, start.elapsed());
+        Ok(())
     }
 }

@@ -891,6 +891,7 @@ mod preview {
                 i18n: app.i18n,
                 session_manager: &None,
                 social_graph: app.social_graph.as_ref(),
+                max_media_distance: 3,
             };
 
             PostView::new(
