@@ -12,6 +12,7 @@ pub struct ProfileSearchResult {
 pub struct ProfileSearchDropdown<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
+    #[allow(dead_code)]
     our_pubkey: &'a Pubkey,
     accounts: &'a Accounts,
 }

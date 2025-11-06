@@ -208,10 +208,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
             ui.add_space(8.0);
 
             // Adjust selected index for dropdown (subtract 1 since "Search posts" is index 0)
-            let mut dropdown_index = self.query.selected_index - 1;
+            let _dropdown_index = self.query.selected_index - 1;
 
             let our_pubkey = self.note_context.accounts.selected_account_pubkey();
-            let mut dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(
+            let _dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(
                 self.note_context.ndb,
                 self.note_context.img_cache,
                 our_pubkey,

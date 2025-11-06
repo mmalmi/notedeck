@@ -448,6 +448,7 @@ impl Notedeck {
         Some(Arc::new(manager))
     }
 
+    #[allow(dead_code)]
     fn init_social_graph_lazy(accounts: &Accounts) -> Option<Arc<SocialGraph>> {
         let selected_account = accounts.get_selected_account();
         let root_pubkey = selected_account.key.pubkey.bytes();

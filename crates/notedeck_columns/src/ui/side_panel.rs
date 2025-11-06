@@ -149,7 +149,7 @@ impl<'a> DesktopSidePanel<'a> {
                         let support_resp = ui.add(support_button(self.current_route));
 
                         let compose_resp = ui
-                            .add(crate::ui::post::compose_note_button(ui.visuals().dark_mode))
+                            .add(crate::ui::post::compose_note_button())
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
                         ui.add(Separator::default().horizontal().spacing(8.0).shrink(4.0));

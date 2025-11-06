@@ -915,11 +915,9 @@ fn hovering_post_button(
     rect.min.y = rect.max.y - 100.0;
     rect.max.x += 48.0 * (1.0 - button_y);
 
-    let darkmode = ui.ctx().style().visuals.dark_mode;
-
     // only show the compose button on profile pages and on home
     let compose_resp = ui
-        .put(rect, ui::post::compose_note_button(darkmode))
+        .put(rect, ui::post::compose_note_button())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     if compose_resp.clicked() && !app.columns(app_ctx.accounts).columns().is_empty() {
         // just use the some side panel logic as the desktop

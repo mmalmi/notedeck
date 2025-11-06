@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::ui::profile_search_dropdown::ProfileSearchDropdown;
 
 pub struct NewChatView<'a> {
+    #[allow(dead_code)]
     i18n: &'a mut Localization,
     session_manager: &'a Option<Arc<SessionManager>>,
     ndb: &'a Ndb,
