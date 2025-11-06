@@ -8,6 +8,7 @@ use egui_winit::clipboard::Clipboard;
 use enostr::RelayPool;
 use nostrdb::Ndb;
 use nostr_double_ratchet::{SessionManager, SessionManagerEvent};
+use nostr_social_graph::SocialGraph;
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
@@ -33,6 +34,7 @@ pub struct AppContext<'a> {
     pub i18n: &'a mut Localization,
     pub session_manager: &'a Option<Arc<SessionManager>>,
     pub session_event_tx: &'a Option<crossbeam_channel::Sender<SessionManagerEvent>>,
+    pub social_graph: &'a Option<Arc<SocialGraph>>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

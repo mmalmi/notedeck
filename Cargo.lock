@@ -3638,6 +3638,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-social-graph"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "log",
+ "nostrdb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "nostrdb"
 version = "0.8.0"
 source = "git+https://github.com/damus-io/nostrdb-rs?rev=2b2e5e43c019b80b98f1db6a03a1b88ca699bfa3#2b2e5e43c019b80b98f1db6a03a1b88ca699bfa3"
@@ -3685,6 +3697,7 @@ dependencies = [
  "ndk-context",
  "nostr 0.37.0",
  "nostr-double-ratchet",
+ "nostr-social-graph",
  "nostrdb",
  "nwc",
  "once_cell",
