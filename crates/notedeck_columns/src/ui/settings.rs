@@ -988,19 +988,32 @@ impl<'a> SettingsView<'a> {
             ui.heading("Users by Follow Distance");
             ui.add_space(8.0);
 
-            egui::Grid::new("distance_stats")
-                .num_columns(2)
-                .spacing([40.0, 8.0])
-                .show(ui, |ui| {
+            // Cache distance counts to avoid repeated expensive calls
+            let cache_id = egui::Id::new("social_graph_distance_counts");
+            let distance_counts: Vec<(u32, usize)> = ui.ctx().data_mut(|d| {
+                d.get_temp(cache_id).unwrap_or_else(|| {
+                    let mut counts = Vec::new();
                     for distance in 0..=5 {
                         if let Ok(users_at_distance) = graph.get_users_by_follow_distance(distance) {
                             let count = users_at_distance.len();
                             if count > 0 {
-                                ui.label(format!("Distance {}:", distance));
-                                ui.label(count.to_string());
-                                ui.end_row();
+                                counts.push((distance, count));
                             }
                         }
+                    }
+                    d.insert_temp(cache_id, counts.clone());
+                    counts
+                })
+            });
+
+            egui::Grid::new("distance_stats")
+                .num_columns(2)
+                .spacing([40.0, 8.0])
+                .show(ui, |ui| {
+                    for (distance, count) in &distance_counts {
+                        ui.label(format!("Distance {}:", distance));
+                        ui.label(count.to_string());
+                        ui.end_row();
                     }
                 });
 
