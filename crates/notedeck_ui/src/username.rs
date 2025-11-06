@@ -104,7 +104,7 @@ fn ui_abbreviate_name(ui: &mut egui::Ui, name: &str, len: usize, color: Option<C
     }
 }
 
-fn ui_abbreviate_name_clickable(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) -> bool {
+fn _ui_abbreviate_name_clickable(ui: &mut egui::Ui, name: &str, len: usize, color: Option<Color32>) -> bool {
     let should_abbrev = name.len() > len;
     let name = if should_abbrev {
         let closest = notedeck::abbrev::floor_char_boundary(name, len);

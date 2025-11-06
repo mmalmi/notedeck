@@ -26,7 +26,7 @@ pub struct UserRecord {
     pub user_id: String,
     pub device_records: HashMap<String, DeviceRecord>,
     is_stale: bool,
-    stale_timestamp: Option<u64>,
+    _stale_timestamp: Option<u64>,
 }
 
 impl UserRecord {
@@ -35,7 +35,7 @@ impl UserRecord {
             user_id,
             device_records: HashMap::new(),
             is_stale: false,
-            stale_timestamp: None,
+            _stale_timestamp: None,
         }
     }
 

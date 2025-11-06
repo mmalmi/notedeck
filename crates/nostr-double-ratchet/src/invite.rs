@@ -1,9 +1,8 @@
-use crate::{Result, Session, Error, INVITE_EVENT_KIND, INVITE_RESPONSE_KIND, Unsubscribe};
+use crate::{Result, Session, Error, INVITE_EVENT_KIND, INVITE_RESPONSE_KIND};
 use enostr::{Filter, Pubkey};
 use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp, UnsignedEvent};
 use nostr::nips::nip44::{self, Version};
 use base64::Engine;
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct Invite {
@@ -299,7 +298,7 @@ impl Invite {
         Ok(())
     }
 
-    pub fn process_invite_response(&self, event: &UnsignedEvent, inviter_private_key: [u8; 32]) -> Result<Option<(Session, Pubkey, Option<String>)>> {
+    pub fn process_invite_response(&self, event: &UnsignedEvent, _inviter_private_key: [u8; 32]) -> Result<Option<(Session, Pubkey, Option<String>)>> {
         let inviter_ephemeral_private_key = self.inviter_ephemeral_private_key
             .ok_or(Error::Invite("Ephemeral key not available".to_string()))?;
 

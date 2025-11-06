@@ -4,7 +4,7 @@ use nostr_double_ratchet::SessionManager;
 use std::sync::Arc;
 
 pub struct NewChatView<'a> {
-    i18n: &'a mut Localization,
+    _i18n: &'a mut Localization,
     session_manager: &'a Option<Arc<SessionManager>>,
 }
 
@@ -14,7 +14,7 @@ impl<'a> NewChatView<'a> {
         session_manager: &'a Option<Arc<SessionManager>>,
     ) -> Self {
         Self {
-            i18n,
+            _i18n: i18n,
             session_manager,
         }
     }
