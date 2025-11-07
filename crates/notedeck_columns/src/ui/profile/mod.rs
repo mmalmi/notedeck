@@ -317,7 +317,8 @@ fn profile_stats(
     let mut pk_bytes = [0u8; 32];
     pk_bytes.copy_from_slice(pubkey.bytes());
 
-    let following_count = nostrdb::socialgraph::get_followed(txn, note_context.ndb, &pk_bytes, 1).len();
+    // Get counts - following requires fetching list, follower has dedicated count API
+    let following_count = nostrdb::socialgraph::get_followed(txn, note_context.ndb, &pk_bytes, 10000).len();
     let follower_count = nostrdb::socialgraph::follower_count(txn, note_context.ndb, &pk_bytes);
 
     ui.horizontal(|ui| {

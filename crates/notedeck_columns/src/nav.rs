@@ -575,7 +575,7 @@ fn process_render_nav_action(
             None
         }
         RenderNavAction::SettingsAction(action) => {
-            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx())
+            action.process_settings_action(app, ctx.settings, ctx.i18n, ctx.img_cache, ui.ctx(), ctx.ndb, ctx.pool, ctx.accounts)
         },
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)

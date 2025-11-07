@@ -15,6 +15,7 @@ use notedeck_ui::{
     app_images::{connected_image, copy_to_clipboard_dark_image, copy_to_clipboard_image, key_image, settings_dark_image, settings_light_image},
     rounded_button, segmented_button, AnimationHelper, NoteOptions, NoteView,
 };
+use std::collections::HashSet;
 
 use crate::{
     nav::{BodyResponse, RouterAction},
@@ -28,6 +29,73 @@ const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
 const ZOOM_STEP: f32 = 0.1;
 const RESET_ZOOM: f32 = 1.0;
+
+fn recrawl_contact_lists(
+    ndb: &nostrdb::Ndb,
+    pool: &mut enostr::RelayPool,
+    accounts: &notedeck::Accounts,
+    max_distance: u32,
+) {
+    use nostrdb::Filter;
+
+    const BATCH_SIZE: usize = 500;
+
+    let Ok(txn) = Transaction::new(ndb) else {
+        return;
+    };
+
+    let current_pk = accounts.get_selected_account().key.pubkey;
+    let mut current_pk_bytes = [0u8; 32];
+    current_pk_bytes.copy_from_slice(current_pk.bytes());
+
+    let mut to_fetch = HashSet::new();
+    let mut already_fetched = HashSet::new();
+
+    // Start with current user
+    to_fetch.insert(current_pk_bytes);
+    already_fetched.insert(current_pk_bytes);
+
+    for distance in 0..max_distance {
+        if to_fetch.is_empty() {
+            break;
+        }
+
+        // Process in batches of BATCH_SIZE authors
+        let authors: Vec<[u8; 32]> = to_fetch.iter().copied().collect();
+
+        for (batch_idx, batch) in authors.chunks(BATCH_SIZE).enumerate() {
+            let filter = Filter::new()
+                .authors(batch.iter().map(|pk| pk as &[u8; 32]))
+                .kinds([3])
+                .limit(batch.len() as u64)
+                .build();
+
+            // Subscribe to contact lists
+            let subid = format!("recrawl-d{}-b{}-{}", distance, batch_idx, uuid::Uuid::new_v4());
+            pool.subscribe(subid, vec![filter]);
+        }
+
+        // Get next level
+        let mut next_level = HashSet::new();
+        for pk in &to_fetch {
+            let followed = nostrdb::socialgraph::get_followed(&txn, ndb, pk, 10000);
+            for followed_pk in followed {
+                if !already_fetched.contains(&followed_pk) {
+                    next_level.insert(followed_pk);
+                    already_fetched.insert(followed_pk);
+                }
+            }
+        }
+
+        to_fetch = next_level;
+    }
+
+    tracing::info!(
+        "Recrawl initiated up to distance {} ({} total users)",
+        max_distance,
+        already_fetched.len()
+    );
+}
 
 enum SettingsIcon<'a> {
     Image(egui::Image<'a>),
@@ -46,6 +114,7 @@ pub enum SettingsAction {
     OpenCacheFolder,
     ClearCacheFolder,
     RouteToSettings(SettingsRoute),
+    RecrawlSocialGraph(u32),
 }
 
 impl SettingsAction {
@@ -56,6 +125,9 @@ impl SettingsAction {
         i18n: &'a mut Localization,
         img_cache: &mut Images,
         ctx: &egui::Context,
+        ndb: &nostrdb::Ndb,
+        pool: &mut enostr::RelayPool,
+        accounts: &notedeck::Accounts,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
 
@@ -105,6 +177,9 @@ impl SettingsAction {
             }
             Self::SetAnimateNavTransitions(value) => {
                 settings.set_animate_nav_transitions(value);
+            }
+            Self::RecrawlSocialGraph(max_distance) => {
+                recrawl_contact_lists(ndb, pool, accounts, max_distance);
             }
         }
         route_action
@@ -954,55 +1029,86 @@ impl<'a> SettingsView<'a> {
     }
 
     pub fn social_graph_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        let action = None;
+        let mut action = None;
 
-        let txn = nostrdb::Transaction::new(self.note_context.ndb).ok()?;
+        let Ok(txn) = nostrdb::Transaction::new(self.note_context.ndb) else {
+            ui.label("Failed to query social graph");
+            return None;
+        };
 
-        // Count users by iterating distances
+        // Get current user's pubkey
+        let current_pk = self.note_context.accounts.get_selected_account().key.pubkey;
+        let mut current_pk_bytes = [0u8; 32];
+        current_pk_bytes.copy_from_slice(current_pk.bytes());
+
+        // Count users at each distance level - cached to avoid repeated computation
         let cache_id = egui::Id::new("social_graph_distance_counts");
         let distance_counts: Vec<(u32, usize)> = ui.ctx().data_mut(|d| {
             d.get_temp(cache_id).unwrap_or_else(|| {
-                let mut counts = Vec::new();
-                let mut total_users = 0;
+                let mut distance_map = std::collections::HashMap::new();
 
-                for distance in 0..=10 {
-                    // Sample a user at each distance to check if any exist
-                    // This is a heuristic - proper impl would need count API
-                    let sample_pk = [distance as u8; 32];
-                    let dist = nostrdb::socialgraph::get_follow_distance(&txn, self.note_context.ndb, &sample_pk);
-                    if dist == distance {
-                        // Found at least one user at this distance
-                        // For now just mark as 1+ users
-                        counts.push((distance, 1));
-                        total_users += 1;
+                // Distance 0: self
+                distance_map.insert(0u32, vec![current_pk_bytes]);
+
+                // BFS traversal to count users at each distance
+                for distance in 1..=5 {
+                    let prev_distance = distance - 1;
+                    let Some(prev_users) = distance_map.get(&prev_distance) else {
+                        break;
+                    };
+
+                    let mut current_distance_users = std::collections::HashSet::new();
+
+                    for user_pk in prev_users {
+                        // Get all users followed by this user
+                        let followed = nostrdb::socialgraph::get_followed(
+                            &txn,
+                            self.note_context.ndb,
+                            user_pk,
+                            10000
+                        );
+
+                        for followed_pk in followed {
+                            // Only count if not seen at a closer distance
+                            let mut is_new = true;
+                            for d in 0..distance {
+                                if let Some(seen) = distance_map.get(&d) {
+                                    if seen.contains(&followed_pk) {
+                                        is_new = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if is_new {
+                                current_distance_users.insert(followed_pk);
+                            }
+                        }
                     }
+
+                    if current_distance_users.is_empty() {
+                        break;
+                    }
+
+                    distance_map.insert(distance, current_distance_users.into_iter().collect());
                 }
 
-                d.insert_temp(cache_id, counts.clone());
-                counts
+                // Convert to sorted vec of (distance, count)
+                let mut result: Vec<(u32, usize)> = distance_map
+                    .iter()
+                    .map(|(d, users)| (*d, users.len()))
+                    .collect();
+                result.sort_by_key(|(d, _)| *d);
+
+                d.insert_temp(cache_id, result.clone());
+                result
             })
         });
-
-        let total_users: usize = distance_counts.iter().map(|(_, c)| c).sum();
 
         ui.add_space(16.0);
         ui.heading("Social Graph Statistics");
         ui.add_space(12.0);
 
-        egui::Grid::new("social_graph_stats")
-            .num_columns(2)
-            .spacing([40.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Users in graph:");
-                ui.label(format!("{}+", total_users));
-                ui.end_row();
-
-                ui.label("Note:");
-                ui.label("Stats updated automatically from contact lists");
-                ui.end_row();
-            });
-
-        ui.add_space(16.0);
         ui.heading("Users by Follow Distance");
         ui.add_space(8.0);
 
@@ -1010,9 +1116,9 @@ impl<'a> SettingsView<'a> {
             .num_columns(2)
             .spacing([40.0, 8.0])
             .show(ui, |ui| {
-                for (distance, _count) in &distance_counts {
+                for (distance, count) in &distance_counts {
                     ui.label(format!("Distance {}:", distance));
-                    ui.label("Present");
+                    ui.label(count.to_string());
                     ui.end_row();
                 }
             });
@@ -1042,6 +1148,32 @@ impl<'a> SettingsView<'a> {
 
         ui.add_space(16.0);
         ui.label("Contact lists are processed automatically. Graph updates as you follow users.");
+
+        ui.add_space(16.0);
+        ui.heading("Recrawl Contact Lists");
+        ui.add_space(8.0);
+        ui.label("Fetch contact lists from relays to update the social graph:");
+        ui.add_space(12.0);
+
+        // Distance slider
+        let distance_slider_id = egui::Id::new("recrawl_distance_slider");
+        let mut max_distance = ui.ctx().data_mut(|d| d.get_temp(distance_slider_id).unwrap_or(2u32));
+
+        ui.horizontal(|ui| {
+            ui.label("Maximum distance:");
+            ui.add(egui::Slider::new(&mut max_distance, 1..=5).show_value(true));
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(distance_slider_id, max_distance));
+
+        ui.add_space(8.0);
+        if ui.button("Start Recrawl").clicked() {
+            action = Some(SettingsAction::RecrawlSocialGraph(max_distance));
+        }
+
+        ui.add_space(8.0);
+        if ui.button("Refresh statistics").clicked() {
+            ui.ctx().data_mut(|d| d.remove::<Vec<(u32, usize)>>(cache_id));
+        }
 
         action
     }
@@ -1078,7 +1210,9 @@ impl<'a> SettingsView<'a> {
                                     }
                                 }
                                 SettingsRoute::SocialGraph => {
-                                    // TODO: implement with nostrdb::socialgraph
+                                    if let Some(new_action) = self.social_graph_section(ui) {
+                                        action = Some(new_action);
+                                    }
                                 }
                                 SettingsRoute::Menu => {}
                             }
