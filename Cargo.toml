@@ -47,7 +47,7 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/mmalmi/nostrdb-rs", rev = "0d50367484013f54a7fc1394f6baebf032ec0702" }
+nostrdb = { git = "https://github.com/mmalmi/nostrdb-rs", rev = "db32a235cd5a7c5c64863e14d1a92ba32f54e62b" }
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
