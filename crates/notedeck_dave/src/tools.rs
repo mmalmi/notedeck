@@ -145,7 +145,6 @@ pub enum ToolCalls {
     Invalid(InvalidToolCall),
 }
 
-
 impl ToolCalls {
     pub fn to_api(&self) -> FunctionCall {
         FunctionCall {
