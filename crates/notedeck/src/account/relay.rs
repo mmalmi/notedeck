@@ -142,6 +142,8 @@ impl RelayDefaults {
             "wss://nos.lol",
             "wss://nostr.wine",
             "wss://purplepag.es",
+            "wss://temp.iris.to",
+            "wss://relay.snort.social",
         ]
         .iter()
         .map(|&url| url.to_string())

@@ -12,6 +12,7 @@ pub struct Args {
     pub options: NotedeckOptions,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
+    pub test_dm_recipient: Option<Pubkey>,
 }
 
 impl Args {
@@ -25,6 +26,7 @@ impl Args {
             dbpath: None,
             datapath: None,
             locale: None,
+            test_dm_recipient: None,
         };
 
         let mut i = 0;
@@ -128,6 +130,19 @@ impl Args {
                 res.options.set(NotedeckOptions::FeatureNotebook, true);
             } else if arg == "--clndash" {
                 res.options.set(NotedeckOptions::FeatureClnDash, true);
+            } else if arg == "--test-dm" {
+                i += 1;
+                let recipient = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("test-dm recipient pubkey missing?");
+                    continue;
+                };
+                if let Ok(pk) = Pubkey::parse(recipient) {
+                    res.test_dm_recipient = Some(pk);
+                } else {
+                    error!("failed to parse test-dm pubkey: {}", recipient);
+                }
             } else {
                 unrecognized_args.insert(arg.clone());
             }

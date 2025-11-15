@@ -14,6 +14,7 @@ use tracing::{debug, error};
 pub mod message;
 pub mod pool;
 pub mod subs_debug;
+pub mod webrtc;
 
 #[derive(Debug, Copy, Clone)]
 pub enum RelayStatus {

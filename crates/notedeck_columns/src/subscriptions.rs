@@ -20,6 +20,12 @@ pub enum SubKind {
 
     /// Contact lists subscription for users at distance 0-2 to build social graph
     ContactLists,
+
+    /// WebRTC signaling subscription for mutual follows
+    WebRTCSignaling,
+
+    /// Session/DM subscriptions (kinds 1059, 1060, 30078)
+    Session,
 }
 
 /// Subscriptions that need to be tracked at various stages. Sometimes we

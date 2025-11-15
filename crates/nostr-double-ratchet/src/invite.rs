@@ -102,7 +102,7 @@ impl Invite {
         Ok(event)
     }
 
-    pub fn from_event(event: &UnsignedEvent) -> Result<Self> {
+    pub fn from_event(event: &nostr::Event) -> Result<Self> {
         let inviter = Pubkey::new(event.pubkey.to_bytes());
 
         let ephemeral_key = event.tags.iter().cloned()
@@ -143,7 +143,7 @@ impl Invite {
         invitee_public_key: Pubkey,
         invitee_private_key: [u8; 32],
         device_id: Option<String>,
-    ) -> Result<(Session, UnsignedEvent)> {
+    ) -> Result<(Session, nostr::Event)> {
         let invitee_session_keys = Keys::generate();
         let invitee_session_key = invitee_session_keys.secret_key().to_secret_bytes();
         let invitee_session_public_key = Pubkey::new(invitee_session_keys.public_key().to_bytes());
@@ -197,13 +197,18 @@ impl Invite {
         let two_days = 2 * 24 * 60 * 60;
         let random_now = now - (rand::random::<u64>() % two_days);
 
-        let envelope = EventBuilder::new(Kind::from(INVITE_RESPONSE_KIND as u16), envelope_content)
+        // Build and sign the event with ephemeral keys
+        let unsigned_envelope = EventBuilder::new(Kind::from(INVITE_RESPONSE_KIND as u16), envelope_content)
             .tag(Tag::parse(&["p".to_string(), hex::encode(self.inviter_ephemeral_public_key.bytes())])
                 .map_err(|e| Error::InvalidEvent(e.to_string()))?)
             .custom_created_at(Timestamp::from(random_now))
             .build(random_sender_keys.public_key());
 
-        Ok((session, envelope))
+        // Sign with the ephemeral keys before returning
+        let signed_envelope = unsigned_envelope.sign_with_keys(&random_sender_keys)
+            .map_err(|e| Error::InvalidEvent(e.to_string()))?;
+
+        Ok((session, signed_envelope))
     }
 
     pub fn serialize(&self) -> Result<String> {
@@ -268,37 +273,31 @@ impl Invite {
 
     pub fn listen(
         &self,
-        event_tx: crossbeam_channel::Sender<crate::session_manager::SessionManagerEvent>,
+        pubsub: &dyn crate::NostrPubSub,
     ) -> Result<()> {
         let filter = Filter::new()
             .kinds(vec![INVITE_RESPONSE_KIND as u64])
-            .pubkey([self.inviter_ephemeral_public_key.bytes()])
+            .pubkeys([self.inviter_ephemeral_public_key.bytes()])
             .build();
 
-        let filter_json = filter.json()?;
-        event_tx.send(crate::session_manager::SessionManagerEvent::Subscribe(filter_json))
-            .map_err(|_| Error::Storage("Failed to send subscribe".to_string()))?;
-
+        pubsub.subscribe(filter)?;
         Ok(())
     }
 
     pub fn from_user(
         user_pubkey: Pubkey,
-        event_tx: crossbeam_channel::Sender<crate::session_manager::SessionManagerEvent>,
+        pubsub: &dyn crate::NostrPubSub,
     ) -> Result<()> {
         let filter = Filter::new()
             .kinds(vec![INVITE_EVENT_KIND as u64])
             .authors([user_pubkey.bytes()])
             .build();
 
-        let filter_json = filter.json()?;
-        event_tx.send(crate::session_manager::SessionManagerEvent::Subscribe(filter_json))
-            .map_err(|_| Error::Storage("Failed to send subscribe".to_string()))?;
-
+        pubsub.subscribe(filter)?;
         Ok(())
     }
 
-    pub fn process_invite_response(&self, event: &UnsignedEvent, _inviter_private_key: [u8; 32]) -> Result<Option<(Session, Pubkey, Option<String>)>> {
+    pub fn process_invite_response(&self, event: &nostr::Event, _inviter_private_key: [u8; 32]) -> Result<Option<(Session, Pubkey, Option<String>)>> {
         let inviter_ephemeral_private_key = self.inviter_ephemeral_private_key
             .ok_or(Error::Invite("Ephemeral key not available".to_string()))?;
 
@@ -335,7 +334,7 @@ impl Invite {
                     inviter_ephemeral_private_key,
                     false, // Inviter is non-initiator, must receive first message to initialize ratchet
                     self.shared_secret,
-                    event.id.map(|id| id.to_string()),
+                    Some(event.id.to_string()),
                 )?;
                 return Ok(Some((session, invitee_identity, None)));
             }
@@ -351,7 +350,7 @@ impl Invite {
             inviter_ephemeral_private_key,
             false, // Inviter is non-initiator, must receive first message to initialize ratchet
             self.shared_secret,
-            event.id.map(|id| id.to_string()),
+            Some(event.id.to_string()),
         )?;
 
         Ok(Some((session, invitee_identity, device_id)))

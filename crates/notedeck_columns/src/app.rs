@@ -8,7 +8,7 @@ use crate::{
     options::AppOptions,
     route::Route,
     storage,
-    subscriptions::{new_sub_id, SubKind, Subscriptions},
+    subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     toolbar::unseen_notification,
@@ -82,6 +82,15 @@ pub struct Damus {
 
     /// Track which column is hovered for mouse back/forward navigation
     hovered_column: Option<usize>,
+
+    /// Track last WebRTC heartbeat time for periodic hello messages
+    last_heartbeat: Option<std::time::Instant>,
+
+    /// Session-unique peer ID for WebRTC signaling (distinguishes multiple devices/tabs)
+    peer_id: String,
+
+    /// WebRTC coordinator for handling peer connections
+    webrtc_coordinator: crate::webrtc_coordinator::WebRTCCoordinator,
 }
 
 fn handle_egui_events(input: &egui::InputState, columns: &mut Columns, hovered_column: Option<usize>) {
@@ -189,6 +198,9 @@ fn try_process_event(
             RelayEvent::Error(e) => error!("{}: {}", &ev.relay, e),
             RelayEvent::Other(msg) => trace!("other event {:?}", &msg),
             RelayEvent::Message(msg) => {
+                if matches!(msg, RelayMessage::Event(_, _)) {
+                    info!("Received relay event from {}", &ev.relay);
+                }
                 process_message(damus, app_ctx, &ev.relay, &msg);
             }
         }
@@ -283,6 +295,55 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
     if let Err(err) = try_process_event(damus, app_ctx, ctx) {
         error!("error processing event: {}", err);
     }
+
+    // WebRTC heartbeat publishing: send hello message every 10 seconds
+    let now = std::time::Instant::now();
+    let should_send_heartbeat = match damus.last_heartbeat {
+        None => true,
+        Some(last) => now.duration_since(last).as_secs() >= 10,
+    };
+
+    if should_send_heartbeat {
+        if let Some(full_keypair) = app_ctx.accounts.get_selected_account().key.to_full() {
+            let hello = enostr::SignalingMessage::hello(damus.peer_id.clone());
+            if let Err(e) = notedeck::publish_webrtc_signaling(app_ctx.pool, &full_keypair, &hello, None) {
+                error!("Failed to publish WebRTC heartbeat: {}", e);
+            } else {
+                debug!("Published WebRTC heartbeat");
+                damus.last_heartbeat = Some(now);
+            }
+        }
+    }
+
+    // Process outgoing WebRTC signaling messages
+    while let Ok(outgoing) = damus.webrtc_coordinator.outgoing_rx.try_recv() {
+        if let Some(full_keypair) = app_ctx.accounts.get_selected_account().key.to_full() {
+            // Convert hex pubkey to bytes for recipient
+            if let Ok(recipient_bytes) = hex::decode(&outgoing.peer_pubkey) {
+                if recipient_bytes.len() == 32 {
+                    let mut recipient = [0u8; 32];
+                    recipient.copy_from_slice(&recipient_bytes);
+
+                    if let Err(e) = notedeck::publish_webrtc_signaling(
+                        app_ctx.pool,
+                        &full_keypair,
+                        &outgoing.message,
+                        Some(&recipient),
+                    ) {
+                        error!(
+                            "Failed to publish outgoing WebRTC signaling to {}: {}",
+                            outgoing.peer_pubkey, e
+                        );
+                    } else {
+                        debug!(
+                            "Published outgoing WebRTC signaling to {}: {:?}",
+                            outgoing.peer_pubkey, outgoing.message.msg_type
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn handle_eose(
@@ -333,6 +394,16 @@ fn handle_eose(
             info!("Social graph contact lists subscription established on {}", relay_url);
         }
 
+        SubKind::WebRTCSignaling => {
+            // Keep subscription open for WebRTC signaling
+            info!("WebRTC signaling subscription established on {}", relay_url);
+        }
+
+        SubKind::Session => {
+            // Keep DM/session subscription open to receive messages
+            info!("Session/DM subscription established on {}", relay_url);
+        }
+
         SubKind::FetchingContactList(timeline_uid) => {
             let timeline = if let Some(tl) = timeline_cache.get_mut(timeline_uid) {
                 tl
@@ -380,26 +451,94 @@ fn handle_eose(
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(_subid, ev) => {
-            if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
-                if let Ok(note_id) = enostr::NoteId::from_hex(ev) {
-                    if let Ok(note) = ctx.ndb.get_note_by_id(&txn, note_id.bytes()) {
-                        let kind = note.kind();
+            info!("Processing event from {}", relay);
 
-                        // Route session events to SessionManager
-                        if kind == 30078 || kind == 1059 || kind == 1060 {
-                            if let Some(tx) = &ctx.session_event_tx {
-                                if let Ok(json) = note.json() {
-                                    if let Ok(event) = nostr::Event::from_json(&json) {
-                                        let unsigned = nostr::UnsignedEvent::from(event);
-                                        let _ = tx.send(nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(unsigned));
+            // Use ev directly (it's already the event JSON string)
+            let event_json = ev.to_string();
+
+            // Route WebRTC signaling and session events BEFORE processing into ndb
+            // Parse the event JSON to check its kind and tags
+            if let Ok(event) = nostr::Event::from_json(&event_json) {
+                let kind = event.kind.as_u16();
+                info!("DEBUG: Parsed event successfully, kind={}", kind);
+
+                // DEBUG: Log all events to trace session event flow
+                if kind == 30078 || kind == 1059 || kind == 1060 {
+                    info!("DEBUG: Received event kind {} from relay {}", kind, relay);
+                }
+
+                // Check if this is a WebRTC signaling event (kind 30078 with #l="webrtc" tag)
+                let is_webrtc = kind == 30078 && event.tags.iter().any(|tag| {
+                    tag.as_slice().len() >= 2 &&
+                    tag.as_slice()[0].as_str() == "l" &&
+                    tag.as_slice()[1].as_str() == "webrtc"
+                });
+
+                if is_webrtc {
+                    info!("Received kind 30078 event with webrtc tag");
+                    // Handle WebRTC signaling event
+                        let sender_pubkey_hex = hex::encode(event.pubkey.serialize());
+                        info!("Received WebRTC signaling event from {}", sender_pubkey_hex);
+
+                        // Try to parse content - could be plain JSON (hello) or encrypted (signaling)
+                        let content = &event.content;
+                        info!("WebRTC event content (first 100 chars): {}", &content.chars().take(100).collect::<String>());
+
+                        let decrypted_content = if content.starts_with('{') {
+                            // Plain JSON (hello messages)
+                            info!("Content is plaintext JSON");
+                            Some(content.clone())
+                        } else {
+                            // Encrypted message - try to decrypt with NIP-44
+                            info!("Content appears encrypted, attempting decryption");
+                            if let Some(keypair) = ctx.accounts.get_selected_account().key.to_full() {
+                                match nostr::SecretKey::from_slice(keypair.secret_key.as_secret_bytes()) {
+                                    Ok(our_sk) => {
+                                        match nostr::nips::nip44::decrypt(&our_sk, &event.pubkey, content) {
+                                            Ok(plaintext) => {
+                                                debug!("Decrypted WebRTC signaling from {}", sender_pubkey_hex);
+                                                Some(plaintext)
+                                            }
+                                            Err(_) => {
+                                                // Decryption failed - message not for us, silently ignore
+                                                debug!("WebRTC signaling from {} not for us", sender_pubkey_hex);
+                                                None
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Invalid our secret key: {}", e);
+                                        None
                                     }
                                 }
+                            } else {
+                                error!("Cannot decrypt WebRTC signaling: no secret key available");
+                                None
                             }
-                        }
+                        };
 
-                        // Contact/mute lists now handled automatically by nostrdb
+                        // Parse and route decrypted/plain message
+                        if let Some(plaintext) = decrypted_content {
+                            info!("Attempting to parse signaling message from plaintext");
+                            if let Ok(message) = enostr::SignalingMessage::from_json(&plaintext) {
+                                info!("Parsed WebRTC signaling message: {:?}", message.msg_type);
+                                // Route to WebRTC coordinator for async processing
+                                damus.webrtc_coordinator.process_signaling(sender_pubkey_hex.clone(), message);
+                            } else {
+                                error!("Failed to parse WebRTC signaling message JSON from {}: {}", sender_pubkey_hex, plaintext);
+                            }
+                        } else {
+                            info!("No decrypted content available");
+                        }
                     }
+                    // Kind 30078 without webrtc tag is handled by EventBroker
+
+                // Route DM-related events (30078 without webrtc, 1059, 1060) to EventBroker
+                if (kind == 30078 && !is_webrtc) || kind == 1059 || kind == 1060 {
+                    ctx.event_broker.process_event(relay, &event_json);
                 }
+            } else {
+                error!("DEBUG: Failed to parse event JSON from {}", relay);
             }
 
             let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
@@ -430,6 +569,17 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                             .relay(relay.url()),
                     ) {
                         error!("error processing multicast event {ev}: {err}");
+                    }
+                }
+                PoolRelay::WebRTC(_) => {
+                    // WebRTC events are client events
+                    if let Err(err) = ctx.ndb.process_event_with(
+                        ev,
+                        nostrdb::IngestMetadata::new()
+                            .client(true)
+                            .relay(relay.url()),
+                    ) {
+                        error!("error processing webrtc event {ev}: {err}");
                     }
                 }
             }
@@ -526,7 +676,7 @@ impl Damus {
         let (parsed_args, unrecognized_args) =
             ColumnsArgs::parse(args, Some(app_context.accounts.selected_account_pubkey()));
 
-        let account = app_context.accounts.selected_account_pubkey_bytes();
+        let account = *app_context.accounts.selected_account_pubkey_bytes();
 
         let mut timeline_cache = TimelineCache::default();
         let mut options = AppOptions::default();
@@ -565,7 +715,7 @@ impl Damus {
                 }
             }
 
-            columns_to_decks_cache(app_context.i18n, columns, account)
+            columns_to_decks_cache(app_context.i18n, columns, &account)
         } else if let Some(decks_cache) = crate::storage::load_decks_cache(
             app_context.path,
             app_context.ndb,
@@ -590,7 +740,7 @@ impl Damus {
         let jobs = JobsCache::default();
         let threads = Threads::default();
 
-        Self {
+        let mut result = Self {
             subscriptions: Subscriptions::default(),
             timeline_cache,
             drafts: Drafts::default(),
@@ -607,7 +757,27 @@ impl Damus {
             onboarding: Onboarding::default(),
             hovered_column: None,
             chat_messages: Arc::new(Mutex::new(HashMap::new())),
-        }
+            last_heartbeat: None,
+            peer_id: uuid::Uuid::new_v4().to_string(),
+            webrtc_coordinator: crate::webrtc_coordinator::WebRTCCoordinator::new(),
+        };
+
+        // Setup WebRTC signaling subscription
+        let txn = Transaction::new(app_context.ndb).expect("failed to create transaction");
+        notedeck::setup_webrtc_signaling_subscription(
+            app_context.pool,
+            app_context.ndb,
+            &txn,
+            &account,
+        );
+
+        // Track the webrtc-signaling subscription
+        result.subscriptions.subs.insert("webrtc-signaling".to_string(), SubKind::WebRTCSignaling);
+
+        // Set our peer ID in the coordinator
+        result.webrtc_coordinator.set_peer_id(result.peer_id.clone());
+
+        result
     }
 
     /// Scroll to the top of the currently selected column. This is called
@@ -670,6 +840,9 @@ impl Damus {
             onboarding: Onboarding::default(),
             hovered_column: None,
             chat_messages: Arc::new(Mutex::new(HashMap::new())),
+            last_heartbeat: None,
+            peer_id: uuid::Uuid::new_v4().to_string(),
+            webrtc_coordinator: crate::webrtc_coordinator::WebRTCCoordinator::new(),
         }
     }
 

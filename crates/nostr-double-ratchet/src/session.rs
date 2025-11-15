@@ -17,6 +17,10 @@ pub struct Session {
     pub(crate) nostr_next_unsubscribe: Arc<Mutex<Option<Unsubscribe>>>,
     pub(crate) skipped_subscription: Arc<Mutex<Option<Unsubscribe>>>,
     pub(crate) internal_subscriptions: Arc<Mutex<Vec<EventCallback>>>,
+    pub(crate) current_key_subid: Arc<Mutex<Option<String>>>,
+    pub(crate) next_key_subid: Arc<Mutex<Option<String>>>,
+    pub(crate) event_tx: Option<crossbeam_channel::Sender<crate::SessionManagerEvent>>,
+    pub(crate) pubsub: Option<Arc<dyn crate::NostrPubSub>>,
 }
 
 impl Session {
@@ -28,7 +32,19 @@ impl Session {
             nostr_next_unsubscribe: Arc::new(Mutex::new(None)),
             skipped_subscription: Arc::new(Mutex::new(None)),
             internal_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            current_key_subid: Arc::new(Mutex::new(None)),
+            next_key_subid: Arc::new(Mutex::new(None)),
+            event_tx: None,
+            pubsub: None,
         }
+    }
+
+    pub fn set_event_tx(&mut self, event_tx: crossbeam_channel::Sender<crate::SessionManagerEvent>) {
+        self.event_tx = Some(event_tx);
+    }
+
+    pub fn set_pubsub(&mut self, pubsub: Arc<dyn crate::NostrPubSub>) {
+        self.pubsub = Some(pubsub);
     }
 }
 
@@ -43,6 +59,7 @@ impl Session {
         let our_keys = Keys::new(nostr::SecretKey::from_slice(&our_ephemeral_nostr_private_key)?);
         let our_next_private_key = nostr::Keys::generate().secret_key().to_secret_bytes();
         let our_next_keys = Keys::new(nostr::SecretKey::from_slice(&our_next_private_key)?);
+
 
         let (root_key, sending_chain_key, our_current_nostr_key, our_next_nostr_key);
 
@@ -71,10 +88,15 @@ impl Session {
             };
         }
 
+        // theirCurrentNostrPublicKey is NEVER set in init - it's populated dynamically when processing messages
+        // Both initiator and non-initiator only set theirNextNostrPublicKey initially
+        let their_current = None;
+        let their_next = Some(their_ephemeral_nostr_public_key);
+
         let state = SessionState {
             root_key,
-            their_current_nostr_public_key: None,
-            their_next_nostr_public_key: Some(their_ephemeral_nostr_public_key),
+            their_current_nostr_public_key: their_current,
+            their_next_nostr_public_key: their_next,
             our_current_nostr_key,
             our_next_nostr_key,
             receiving_chain_key: None,
@@ -92,7 +114,86 @@ impl Session {
             nostr_next_unsubscribe: Arc::new(Mutex::new(None)),
             skipped_subscription: Arc::new(Mutex::new(None)),
             internal_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            current_key_subid: Arc::new(Mutex::new(None)),
+            next_key_subid: Arc::new(Mutex::new(None)),
+            event_tx: None,
+            pubsub: None,
         })
+    }
+
+    /// Subscribe to kind 1060 messages for this session's ratchet keys
+    pub fn subscribe_to_messages(&mut self) -> Result<()> {
+        // Prefer pubsub if available, fallback to event_tx for backward compat
+        if let Some(ref pubsub) = self.pubsub {
+            if let Some(current_pk) = self.state.their_current_nostr_public_key {
+                let filter = enostr::Filter::new()
+                    .kinds(vec![crate::MESSAGE_EVENT_KIND as u64])
+                    .authors([current_pk.bytes()])
+                    .build();
+
+                let subid = pubsub.subscribe(filter)?;
+                *self.current_key_subid.lock().unwrap() = Some(subid);
+            }
+
+            if let Some(next_pk) = self.state.their_next_nostr_public_key {
+                let filter = enostr::Filter::new()
+                    .kinds(vec![crate::MESSAGE_EVENT_KIND as u64])
+                    .authors([next_pk.bytes()])
+                    .build();
+
+                let subid = pubsub.subscribe(filter)?;
+                *self.next_key_subid.lock().unwrap() = Some(subid);
+            }
+        } else if let Some(ref event_tx) = self.event_tx {
+            // Fallback to old event_tx method
+            if let Some(current_pk) = self.state.their_current_nostr_public_key {
+                let filter = enostr::Filter::new()
+                    .kinds(vec![crate::MESSAGE_EVENT_KIND as u64])
+                    .authors([current_pk.bytes()])
+                    .build();
+
+                let filter_json = filter.json()?;
+                let subid = format!("session-current-{}", uuid::Uuid::new_v4());
+
+                event_tx.send(crate::SessionManagerEvent::Subscribe(filter_json))
+                    .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
+
+                *self.current_key_subid.lock().unwrap() = Some(subid);
+            }
+
+            if let Some(next_pk) = self.state.their_next_nostr_public_key {
+                let filter = enostr::Filter::new()
+                    .kinds(vec![crate::MESSAGE_EVENT_KIND as u64])
+                    .authors([next_pk.bytes()])
+                    .build();
+
+                let filter_json = filter.json()?;
+                let subid = format!("session-next-{}", uuid::Uuid::new_v4());
+
+                event_tx.send(crate::SessionManagerEvent::Subscribe(filter_json))
+                    .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
+
+                *self.next_key_subid.lock().unwrap() = Some(subid);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update subscriptions after ratchet step (keys changed)
+    pub fn update_subscriptions(&mut self) -> Result<()> {
+        // Unsubscribe from old keys
+        if let Some(event_tx) = &self.event_tx {
+            if let Some(old_subid) = self.current_key_subid.lock().unwrap().take() {
+                let _ = event_tx.send(crate::SessionManagerEvent::Unsubscribe(old_subid));
+            }
+            if let Some(old_subid) = self.next_key_subid.lock().unwrap().take() {
+                let _ = event_tx.send(crate::SessionManagerEvent::Unsubscribe(old_subid));
+            }
+        }
+
+        // Subscribe to new keys
+        self.subscribe_to_messages()
     }
 
     pub fn can_send(&self) -> bool {
@@ -100,12 +201,12 @@ impl Session {
             && self.state.our_current_nostr_key.is_some()
     }
 
-    pub fn send(&mut self, text: String) -> Result<UnsignedEvent> {
+    pub fn send(&mut self, text: String) -> Result<nostr::Event> {
         let dummy_keys = Keys::generate();
         self.send_event(EventBuilder::text_note(text).build(dummy_keys.public_key()))
     }
 
-    pub fn send_event(&mut self, mut event: UnsignedEvent) -> Result<UnsignedEvent> {
+    pub fn send_event(&mut self, mut event: UnsignedEvent) -> Result<nostr::Event> {
         if !self.can_send() {
             return Err(Error::NotInitiator);
         }
@@ -153,15 +254,25 @@ impl Session {
         let tags = vec![Tag::parse(&["header".to_string(), encrypted_header])
             .map_err(|e| Error::InvalidEvent(e.to_string()))?];
 
-        let event = nostr::EventBuilder::new(
+        let author_pubkey = nostr::PublicKey::from_slice(our_current.public_key.bytes())?;
+
+
+        // Build the event
+        let unsigned_event = nostr::EventBuilder::new(
             nostr::Kind::from(MESSAGE_EVENT_KIND as u16),
             encrypted_data,
         )
         .tags(tags)
         .custom_created_at(Timestamp::from(now))
-        .build(nostr::PublicKey::from_slice(our_current.public_key.bytes())?);
+        .build(author_pubkey);
 
-        Ok(event)
+        // Sign with the ephemeral private key before returning
+        let author_secret_key = nostr::SecretKey::from_slice(&our_current.private_key)?;
+        let author_keys = nostr::Keys::new(author_secret_key);
+        let signed_event = unsigned_event.sign_with_keys(&author_keys)
+            .map_err(|e| Error::InvalidEvent(e.to_string()))?;
+
+        Ok(signed_event)
     }
 
     fn ratchet_encrypt(&mut self, plaintext: &str) -> Result<(Header, String)> {
@@ -323,7 +434,7 @@ impl Session {
         Ok(None)
     }
 
-    pub fn receive(&mut self, event: &nostr::UnsignedEvent) -> Result<Option<String>> {
+    pub fn receive(&mut self, event: &nostr::Event) -> Result<Option<String>> {
         let header_tag = event.tags.iter().cloned().find(|t| {
             t.clone().to_vec().first().map(|s| s.as_str()) == Some("header")
         });
@@ -367,6 +478,9 @@ impl Session {
                 self.skip_message_keys(header.previous_chain_length, &sender_pubkey)?;
             }
             self.ratchet_step()?;
+
+            // Update subscriptions after ratchet (keys changed)
+            let _ = self.update_subscriptions();
         }
 
         let plaintext = self.ratchet_decrypt(&header, &event.content, &sender_pubkey)?;
@@ -405,5 +519,15 @@ impl Session {
             unsub();
         }
         self.internal_subscriptions.lock().unwrap().clear();
+
+        // Unsubscribe from session-managed subscriptions
+        if let Some(event_tx) = &self.event_tx {
+            if let Some(subid) = self.current_key_subid.lock().unwrap().take() {
+                let _ = event_tx.send(crate::SessionManagerEvent::Unsubscribe(subid));
+            }
+            if let Some(subid) = self.next_key_subid.lock().unwrap().take() {
+                let _ = event_tx.send(crate::SessionManagerEvent::Unsubscribe(subid));
+            }
+        }
     }
 }

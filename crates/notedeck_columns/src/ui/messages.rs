@@ -10,6 +10,7 @@ pub struct MessagesView<'a> {
     ndb: &'a Ndb,
     session_manager: &'a Option<Arc<SessionManager>>,
     chat_messages: &'a notedeck::ChatMessages,
+    account_pubkey: &'a [u8; 32],
 }
 
 impl<'a> MessagesView<'a> {
@@ -19,12 +20,14 @@ impl<'a> MessagesView<'a> {
         ndb: &'a Ndb,
         session_manager: &'a Option<Arc<SessionManager>>,
         chat_messages: &'a notedeck::ChatMessages,
+        account_pubkey: &'a [u8; 32],
     ) -> Self {
         Self {
             img_cache,
             ndb,
             session_manager,
             chat_messages,
+            account_pubkey,
         }
     }
 
@@ -41,55 +44,77 @@ impl<'a> MessagesView<'a> {
             ui.add_space(8.0);
         }
 
-        let conversations = if let Some(manager) = self.session_manager {
-            let Ok(txn) = Transaction::new(self.ndb) else {
-                return None;
-            };
-
-            let mut user_pubkeys = manager.get_user_pubkeys();
-            let our_pubkey = manager.get_our_pubkey();
-
-            // Include self only if there are messages with self
-            let self_chat_key = notedeck::get_chat_key(&our_pubkey);
-            let has_self_messages = self.chat_messages
-                .lock()
-                .unwrap()
-                .get(&self_chat_key)
-                .map_or(false, |msgs| !msgs.is_empty());
-
-            if has_self_messages && !user_pubkeys.contains(&our_pubkey) {
-                user_pubkeys.push(our_pubkey);
-            }
-
-            user_pubkeys
-                .iter()
-                .map(|pubkey| {
-                    let pubkey_hex = hex::encode(pubkey.bytes());
-
-                    let (display_name, profile_pic) = match self.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()) {
-                        Ok(profile) => {
-                            let name = notedeck::name::get_display_name(Some(&profile)).name().to_string();
-                            let pic = notedeck::profile::get_profile_url(Some(&profile)).to_string();
-                            (name, pic)
-                        }
-                        Err(_) => {
-                            (format!("{}...", &pubkey_hex[..16]), notedeck::profile::no_pfp_url().to_string())
-                        }
-                    };
-
-                    MockConversation {
-                        pubkey: pubkey_hex,
-                        display_name,
-                        profile_pic,
-                        last_message: "No messages yet".to_string(),
-                        timestamp: "".to_string(),
-                        unread: false,
-                    }
-                })
-                .collect()
-        } else {
-            vec![]
+        let Ok(txn) = Transaction::new(self.ndb) else {
+            return None;
         };
+
+        // Only show chats for the current account
+        // Get chats from SessionManager for this account
+        let mut user_pubkeys_set = std::collections::HashSet::new();
+
+        if let Some(manager) = self.session_manager {
+            // Verify SessionManager belongs to current account
+            let manager_pubkey = manager.get_our_pubkey();
+            if manager_pubkey.bytes() == self.account_pubkey {
+                // Add users from SessionManager
+                for pubkey in manager.get_user_pubkeys() {
+                    user_pubkeys_set.insert(pubkey);
+                }
+            }
+        }
+
+        let mut conversations: Vec<Conversation> = user_pubkeys_set
+            .iter()
+            .map(|pubkey| {
+                let pubkey_hex = hex::encode(pubkey.bytes());
+
+                let (display_name, profile_pic) = match self.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()) {
+                    Ok(profile) => {
+                        let name = notedeck::name::get_display_name(Some(&profile)).name().to_string();
+                        let pic = notedeck::profile::get_profile_url(Some(&profile)).to_string();
+                        (name, pic)
+                    }
+                    Err(_) => {
+                        (format!("{}...", &pubkey_hex[..16]), notedeck::profile::no_pfp_url().to_string())
+                    }
+                };
+
+                // Get last message from chat_messages
+                let chat_key = hex::encode(pubkey.bytes());
+                let (last_message, timestamp_str, timestamp_secs) = self.chat_messages
+                    .lock()
+                    .unwrap()
+                    .get(&chat_key)
+                    .and_then(|msgs| msgs.last())
+                    .map(|msg| {
+                        // Simple time formatting without chrono
+                        let secs_since_epoch = msg.timestamp;
+                        let hours = (secs_since_epoch / 3600) % 24;
+                        let minutes = (secs_since_epoch / 60) % 60;
+                        let ts = format!("{:02}:{:02}", hours, minutes);
+                        (msg.content.clone(), ts, secs_since_epoch)
+                    })
+                    .unwrap_or_else(|| ("No messages yet".to_string(), String::new(), 0));
+
+                Conversation {
+                    pubkey: pubkey_hex,
+                    display_name,
+                    profile_pic,
+                    last_message,
+                    timestamp: timestamp_str,
+                    timestamp_secs,
+                    unread: false,
+                }
+            })
+            .collect();
+
+        // Sort by latest message timestamp (descending), then by pubkey (ascending)
+        conversations.sort_by(|a, b| {
+            match b.timestamp_secs.cmp(&a.timestamp_secs) {
+                std::cmp::Ordering::Equal => a.pubkey.cmp(&b.pubkey),
+                other => other,
+            }
+        });
 
         for conversation in conversations {
             let resp = self.render_conversation_item(ui, &conversation)
@@ -105,7 +130,7 @@ impl<'a> MessagesView<'a> {
     fn render_conversation_item(
         &mut self,
         ui: &mut egui::Ui,
-        conversation: &MockConversation,
+        conversation: &Conversation,
     ) -> egui::Response {
         let (rect, resp) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), 72.0),
@@ -263,12 +288,13 @@ pub enum MessageAction {
     NewChat,
 }
 
-struct MockConversation {
+struct Conversation {
     pubkey: String,
     display_name: String,
     profile_pic: String,
     last_message: String,
     timestamp: String,
+    timestamp_secs: u64,
     unread: bool,
 }
 

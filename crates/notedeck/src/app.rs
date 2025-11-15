@@ -16,7 +16,7 @@ use egui_winit::clipboard::Clipboard;
 use enostr::{RelayPool, Pubkey};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -25,18 +25,93 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 use nostr_double_ratchet::{SessionManager, DebouncedFileStorage, SessionManagerEvent};
 use crossbeam_channel::Receiver;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChatMessage {
+    #[serde(serialize_with = "serialize_pubkey", deserialize_with = "deserialize_pubkey")]
     pub sender: Pubkey,
     pub content: String,
     pub timestamp: u64,
     pub event_id: Option<String>,
 }
 
+fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&hex::encode(pubkey.bytes()))
+}
+
+fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let s = String::deserialize(deserializer)?;
+    let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+    if bytes.len() != 32 {
+        return Err(serde::de::Error::custom("Invalid pubkey length"));
+    }
+    let mut pk_bytes = [0u8; 32];
+    pk_bytes.copy_from_slice(&bytes);
+    Ok(Pubkey::new(pk_bytes))
+}
+
 pub type ChatMessages = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
 
 pub fn get_chat_key(user_pk: &Pubkey) -> String {
     hex::encode(user_pk.bytes())
+}
+
+fn chat_messages_path(data_path: &DataPath, account_pubkey: &Pubkey) -> std::path::PathBuf {
+    let account_hex = hex::encode(account_pubkey.bytes());
+    data_path.path(DataPathType::Cache)
+        .join("chat-messages")
+        .join(format!("{}.json", account_hex))
+}
+
+fn save_chat_messages(
+    chat_messages: &ChatMessages,
+    data_path: &DataPath,
+    account_pubkey: &Pubkey,
+) {
+    let path = chat_messages_path(data_path, account_pubkey);
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let messages = chat_messages.lock().unwrap().clone();
+
+    match serde_json::to_string_pretty(&messages) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                error!("Failed to save chat messages: {}", e);
+            }
+        }
+        Err(e) => {
+            error!("Failed to serialize chat messages: {}", e);
+        }
+    }
+}
+
+fn load_chat_messages(
+    data_path: &DataPath,
+    account_pubkey: &Pubkey,
+) -> HashMap<String, Vec<ChatMessage>> {
+    let path = chat_messages_path(data_path, account_pubkey);
+
+    match std::fs::read_to_string(&path) {
+        Ok(json) => {
+            match serde_json::from_str(&json) {
+                Ok(messages) => messages,
+                Err(e) => {
+                    error!("Failed to deserialize chat messages: {}", e);
+                    HashMap::new()
+                }
+            }
+        }
+        Err(_) => HashMap::new(), // File doesn't exist yet
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -50,6 +125,135 @@ pub enum AppAction {
 
 pub trait App {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+}
+
+/// Setup WebRTC signaling subscription for mutual follows + self
+pub fn setup_webrtc_signaling_subscription(
+    pool: &mut RelayPool,
+    ndb: &Ndb,
+    txn: &Transaction,
+    our_pubkey: &[u8; 32],
+) {
+    use enostr::MutualFollowDetector;
+
+    info!("Setting up WebRTC signaling subscription");
+
+    // Get mutual follows
+    let detector = MutualFollowDetector::new(ndb.clone());
+    let mut mutual_follows = detector.get_mutual_follows(txn, our_pubkey);
+
+    // Add self to receive own messages from other devices (iris-compatible)
+    mutual_follows.push(*our_pubkey);
+
+    info!("Subscribing to WebRTC signaling for {} peers (including self)", mutual_follows.len());
+
+    // Create filter for kind 30078 with #l="webrtc" from mutual follows + self
+    // iris-client subscribes with: kinds: [30078], "#l": ["webrtc"], authors: [mutual_follows + self], since: now - 15s
+    let filter = enostr::Filter::new()
+        .kinds(vec![30078])
+        .authors(mutual_follows.iter())
+        .tags(["webrtc"], 'l') // #l="webrtc" tag
+        .since(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() - 15) // Last 15 seconds like iris
+        .build();
+
+    let subid = "webrtc-signaling".to_string();
+
+    // Subscribe to all relays
+    pool.subscribe(subid, vec![filter]);
+
+    info!("WebRTC signaling subscription active");
+}
+
+/// Publish a WebRTC signaling message
+/// iris-client compatible: kind 30078, #l="webrtc", with d and expiration tags
+///
+/// Hello messages are always plaintext (broadcast)
+/// Signaling messages (offer/answer/candidate) are encrypted with NIP-44 to recipient
+pub fn publish_webrtc_signaling<'a>(
+    pool: &mut RelayPool,
+    keypair: &enostr::FilledKeypair<'a>,
+    message: &enostr::SignalingMessage,
+    recipient_pubkey: Option<&[u8; 32]>,
+) -> Result<(), String> {
+    use uuid::Uuid;
+    use enostr::SignalingType;
+
+    // Serialize message to JSON
+    let plaintext_content = message.to_json().map_err(|e| format!("Failed to serialize message: {}", e))?;
+
+    tracing::info!("WebRTC signaling JSON: {}", plaintext_content);
+
+    // Determine if encryption is needed
+    // Hello messages are always plaintext (broadcast)
+    // Signaling messages (offer/answer/candidate) are encrypted with NIP-44
+    let should_encrypt = matches!(message.msg_type,
+        SignalingType::Offer { .. } |
+        SignalingType::Answer { .. } |
+        SignalingType::Candidate { .. }
+    );
+
+    // Encrypt content if needed
+    let content = if should_encrypt {
+        if let Some(recipient) = recipient_pubkey {
+            // Encrypt with NIP-44
+            let secret_key = nostr::SecretKey::from_slice(keypair.secret_key.as_secret_bytes())
+                .map_err(|e| format!("Invalid secret key: {}", e))?;
+            let recipient_pk = nostr::PublicKey::from_slice(recipient)
+                .map_err(|e| format!("Invalid recipient pubkey: {}", e))?;
+
+            nostr::nips::nip44::encrypt(&secret_key, &recipient_pk, &plaintext_content, nostr::nips::nip44::Version::V2)
+                .map_err(|e| format!("Failed to encrypt message: {}", e))?
+        } else {
+            return Err("Signaling messages require recipient pubkey for encryption".to_string());
+        }
+    } else {
+        plaintext_content
+    };
+
+    // Create nostr event
+    let secret_key = nostr::SecretKey::from_slice(keypair.secret_key.as_secret_bytes())
+        .map_err(|e| format!("Invalid secret key: {}", e))?;
+    let keys = nostr::Keys::new(secret_key);
+
+    // Build event with iris-compatible tags
+    // Note: No 'p' tag even for encrypted messages to preserve privacy
+    // Recipients try to decrypt all messages to see if they're for them
+    let event_builder = nostr::EventBuilder::new(
+        nostr::Kind::from(30078), // APP_DATA
+        content,
+    )
+    .tag(nostr::Tag::custom(
+        nostr::TagKind::Custom(std::borrow::Cow::Borrowed("l")),
+        vec!["webrtc"],
+    ))
+    .tag(nostr::Tag::custom(
+        nostr::TagKind::Custom(std::borrow::Cow::Borrowed("d")),
+        vec![&Uuid::new_v4().to_string()],
+    ))
+    .tag(nostr::Tag::custom(
+        nostr::TagKind::Custom(std::borrow::Cow::Borrowed("expiration")),
+        vec![&(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 15).to_string()], // 15s expiration like iris
+    ));
+
+    let event = event_builder.sign_with_keys(&keys)
+        .map_err(|e| format!("Failed to sign event: {}", e))?;
+
+    // Publish to all relays
+    use nostr::JsonUtil;
+    let json = event.as_json();
+    tracing::info!("WebRTC event JSON: {}", json);
+    let msg = enostr::ClientMessage::event_json(json)
+        .map_err(|e| format!("Failed to create client message: {}", e))?;
+    pool.send(&msg);
+
+    info!("Published WebRTC signaling message: {:?}", message.msg_type);
+    Ok(())
 }
 
 #[derive(Default)]
@@ -100,6 +304,9 @@ pub struct Notedeck {
     session_event_rx: Option<Receiver<SessionManagerEvent>>,
     session_event_tx: Option<crossbeam_channel::Sender<SessionManagerEvent>>,
     chat_messages: ChatMessages,
+    session_subscriptions: HashSet<String>,
+    test_dm_sent: bool,
+    event_broker: crate::event_broker::EventBroker,
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -149,6 +356,25 @@ impl eframe::App for Notedeck {
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
 
+        // Send test DM if requested
+        if !self.test_dm_sent {
+            if let Some(recipient) = self.args.test_dm_recipient {
+                if let Some(manager) = &self.session_manager {
+                    info!("Sending test DM to {}", hex::encode(recipient.bytes()));
+                    match manager.send_text(recipient, "Test DM from --test-dm flag".to_string()) {
+                        Ok(event_ids) => {
+                            info!("Test DM sent: {} events", event_ids.len());
+                            self.test_dm_sent = true;
+                        }
+                        Err(e) => {
+                            error!("Failed to send test DM: {}", e);
+                            self.test_dm_sent = true; // Don't retry
+                        }
+                    }
+                }
+            }
+        }
+
         // process session manager events
         if let Some(rx) = &self.session_event_rx {
             if let Some(manager) = &self.session_manager {
@@ -170,16 +396,34 @@ impl eframe::App for Notedeck {
                             }
                         }
                         SessionManagerEvent::Subscribe(filter_json) => {
+                            info!("SessionManager Subscribe request with filter JSON: {}", filter_json);
                             if let Ok(filter) = nostrdb::Filter::from_json(&filter_json) {
                                 let subid = format!("session-{}", uuid::Uuid::new_v4());
                                 self.pool.subscribe(subid.clone(), vec![filter]);
-                                info!("Subscribed to session filter: {}", subid);
+                                self.session_subscriptions.insert(subid.clone());
+                                info!("Subscribed to session filter: {} with filter: {}", subid, filter_json);
                             } else {
-                                error!("Failed to parse session filter JSON");
+                                error!("Failed to parse session filter JSON: {}", filter_json);
+                            }
+                        }
+                        SessionManagerEvent::Unsubscribe(subid) => {
+                            info!("SessionManager Unsubscribe request: {}", subid);
+                            if self.session_subscriptions.remove(&subid) {
+                                self.pool.unsubscribe(subid.clone());
+                                info!("Unsubscribed from session filter: {}", subid);
                             }
                         }
                         SessionManagerEvent::ReceivedEvent(event) => {
+                            eprintln!("🔄 App processing ReceivedEvent kind {}", event.kind.as_u16());
                             manager.process_received_event(event);
+                        }
+                        SessionManagerEvent::PublishSigned(signed_event) => {
+                            use nostr::JsonUtil;
+                            let json = signed_event.as_json();
+                            if let Ok(msg) = enostr::ClientMessage::event_json(json) {
+                                self.pool.send(&msg);
+                                info!("Published signed session event: kind {}", signed_event.kind);
+                            }
                         }
                         SessionManagerEvent::DecryptedMessage { sender, content, event_id } => {
                             info!("Decrypted message from {}: {} (event_id: {:?})",
@@ -205,6 +449,34 @@ impl eframe::App for Notedeck {
                                 .push(msg);
                         }
                     }
+                }
+            }
+        }
+
+        // Process relay events through EventBroker
+        loop {
+            let pool_event = if let Some(ev) = self.pool.try_recv() {
+                ev.into_owned()
+            } else {
+                break;
+            };
+
+            use enostr::RelayEvent;
+            match (&pool_event.event).into() {
+                RelayEvent::Opened => {
+                    tracing::info!("Relay opened: {}", pool_event.relay);
+                }
+                RelayEvent::Closed => {
+                    tracing::warn!("{} connection closed", pool_event.relay);
+                }
+                RelayEvent::Error(e) => {
+                    tracing::error!("{}: {}", pool_event.relay, e);
+                }
+                RelayEvent::Other(_msg) => {
+                    // Ignore other events
+                }
+                RelayEvent::Message(msg) => {
+                    self.process_relay_message(&pool_event.relay, &msg);
                 }
             }
         }
@@ -239,6 +511,12 @@ impl eframe::App for Notedeck {
     /// Called by the framework to save state before shutdown.
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
         //eframe::set_value(storage, eframe::APP_KEY, self);
+
+        // Save chat messages for current account
+        let selected_pubkey = self.accounts.get_selected_account().key.pubkey;
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(selected_pubkey.bytes());
+        save_chat_messages(&self.chat_messages, &self.path, &Pubkey::new(pk_bytes));
     }
 }
 
@@ -308,6 +586,35 @@ impl Notedeck {
             }
         }
 
+        // Add WebRTC relay for peer-to-peer connections
+        {
+            if let Ok(webrtc_relay) = enostr::PoolRelay::webrtc(true) {
+                // Clone the relay before pushing to pool for async start
+                let relay_to_start = if let enostr::PoolRelay::WebRTC(ref relay) = webrtc_relay {
+                    Some(relay.clone())
+                } else {
+                    None
+                };
+
+                pool.relays.push(webrtc_relay);
+                info!("WebRTC relay initialized with STUN server");
+
+                // Start the WebRTC relay asynchronously
+                if let Some(relay) = relay_to_start {
+                    tokio::spawn(async move {
+                        let mut relay_mut = relay;
+                        if let Err(e) = relay_mut.start().await {
+                            error!("Failed to start WebRTC relay: {}", e);
+                        } else {
+                            info!("WebRTC relay started successfully");
+                        }
+                    });
+                }
+            } else {
+                error!("Failed to initialize WebRTC relay");
+            }
+        }
+
         let mut unknown_ids = UnknownIds::default();
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
@@ -342,6 +649,9 @@ impl Notedeck {
         let mut pk_bytes = [0u8; 32];
         pk_bytes.copy_from_slice(selected_pubkey.bytes());
         nostrdb::socialgraph::set_root(&ndb, &pk_bytes);
+
+        // Subscribe to WebRTC signaling events for mutual follows
+        setup_webrtc_signaling_subscription(&mut pool, &ndb, &txn, &pk_bytes);
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
@@ -378,6 +688,20 @@ impl Notedeck {
         let (session_event_tx, session_event_rx) = crossbeam_channel::unbounded();
         let session_manager = Self::init_session_manager(&path, &accounts, session_event_tx.clone());
 
+        // Load chat messages for the selected account
+        let selected_pubkey = accounts.get_selected_account().key.pubkey;
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(selected_pubkey.bytes());
+        let loaded_messages = load_chat_messages(&path, &Pubkey::new(pk_bytes));
+        let chat_messages = Arc::new(Mutex::new(loaded_messages));
+
+        // Initialize EventBroker
+        let mut event_broker = crate::event_broker::EventBroker::new();
+        // SessionManagerHandler will be created in notedeck_columns when ready
+        // For now, register it for kinds 1059, 1060, 30078
+        let session_handler = crate::event_broker::SessionManagerHandler::new(session_event_tx.clone());
+        event_broker.subscribe_events("SessionManager", vec![1059, 1060, 30078], session_handler);
+
         Self {
             ndb,
             img_cache,
@@ -400,7 +724,10 @@ impl Notedeck {
             session_manager,
             session_event_rx: Some(session_event_rx),
             session_event_tx: Some(session_event_tx),
-            chat_messages: Arc::new(Mutex::new(HashMap::new())),
+            chat_messages,
+            session_subscriptions: HashSet::new(),
+            test_dm_sent: false,
+            event_broker,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -533,8 +860,72 @@ impl Notedeck {
             session_manager: &self.session_manager,
             session_event_tx: &self.session_event_tx,
             chat_messages: &self.chat_messages,
+            subscriptions: None,
+            event_broker: &mut self.event_broker,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
+        }
+    }
+
+    fn process_relay_message(&mut self, relay: &str, msg: &enostr::RelayMessage) {
+        use enostr::RelayMessage;
+        use nostr::JsonUtil;
+
+        match msg {
+            RelayMessage::Event(_subid, ev) => {
+                // Validate event can be parsed before processing
+                if nostr::Event::from_json(ev).is_err() {
+                    return;
+                }
+
+                // Route to EventBroker handlers BEFORE processing into ndb
+                let event_json = ev.to_string();
+                self.event_broker.process_event(relay, &event_json);
+
+                // Process event into nostrdb
+                let relay_obj = if let Some(r) = self.pool.relays.iter().find(|r| r.url() == relay) {
+                    r
+                } else {
+                    tracing::error!("couldn't find relay {} for note processing", relay);
+                    return;
+                };
+
+                match relay_obj {
+                    enostr::PoolRelay::Websocket(_) => {
+                        if let Err(err) = self.ndb.process_event_with(
+                            ev,
+                            nostrdb::IngestMetadata::new()
+                                .client(false)
+                                .relay(relay),
+                        ) {
+                            tracing::error!("error processing event {}: {}", ev, err);
+                        }
+                    }
+                    enostr::PoolRelay::Multicast(_) | enostr::PoolRelay::WebRTC(_) => {
+                        if let Err(err) = self.ndb.process_event_with(
+                            ev,
+                            nostrdb::IngestMetadata::new()
+                                .client(true)
+                                .relay(relay),
+                        ) {
+                            tracing::error!("error processing client event {}: {}", ev, err);
+                        }
+                    }
+                }
+            }
+            RelayMessage::Notice(msg) => {
+                tracing::warn!("Notice from {}: {}", relay, msg);
+            }
+            RelayMessage::OK(cr) => {
+                tracing::info!("OK from {}: {:?}", relay, cr);
+            }
+            RelayMessage::Eose(subid) => {
+                tracing::trace!("EOSE from {} for subscription {}", relay, subid);
+                // Check if this is a session subscription
+                if self.session_subscriptions.contains(&subid.to_string()) {
+                    tracing::trace!("EOSE for session subscription: {}", subid);
+                }
+            }
         }
     }
 

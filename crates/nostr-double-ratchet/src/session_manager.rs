@@ -1,15 +1,18 @@
 use crate::{
     InMemoryStorage, Invite, Result, StorageAdapter, UserRecord,
 };
-use enostr::{Filter, Pubkey};
+use enostr::Pubkey;
 use nostr::UnsignedEvent;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub enum SessionManagerEvent {
     Subscribe(String),
+    Unsubscribe(String),
     Publish(UnsignedEvent),
-    ReceivedEvent(UnsignedEvent),
+    PublishSigned(nostr::Event), // For events pre-signed with ephemeral keys (kind 1059, 1060)
+    ReceivedEvent(nostr::Event),
     DecryptedMessage {
         sender: Pubkey,
         content: String,
@@ -22,6 +25,12 @@ struct InviteState {
     our_identity_key: [u8; 32],
 }
 
+struct PendingMessage {
+    text: String,
+    timestamp: u64,
+    first_sent_at: Option<u64>,
+}
+
 pub struct SessionManager {
     user_records: Arc<Mutex<HashMap<Pubkey, UserRecord>>>,
     our_public_key: Pubkey,
@@ -32,6 +41,7 @@ pub struct SessionManager {
     initialized: Arc<Mutex<bool>>,
     invite_state: Arc<Mutex<Option<InviteState>>>,
     pending_invites: Arc<Mutex<HashMap<Pubkey, Invite>>>,
+    pending_messages: Arc<Mutex<HashMap<Pubkey, VecDeque<PendingMessage>>>>,
 }
 
 impl SessionManager {
@@ -52,6 +62,7 @@ impl SessionManager {
             initialized: Arc::new(Mutex::new(false)),
             invite_state: Arc::new(Mutex::new(None)),
             pending_invites: Arc::new(Mutex::new(HashMap::new())),
+            pending_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -82,61 +93,123 @@ impl SessionManager {
             our_identity_key: self.our_identity_key,
         });
 
-        let filter = Filter::new()
-            .kinds(vec![crate::INVITE_RESPONSE_KIND as u64])
-            .pubkey([invite.inviter_ephemeral_public_key.bytes()])
-            .build();
-
-        let filter_json = filter.json()?;
-        self.event_tx.send(SessionManagerEvent::Subscribe(filter_json))
-            .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
+        // Subscribe to invite responses using Invite's own filter (with #p tag)
+        let pubsub = crate::ChannelPubSub::new(self.event_tx.clone());
+        invite.listen(&pubsub)?;
 
         let event = invite.get_event()?;
         self.event_tx.send(SessionManagerEvent::Publish(event))
             .map_err(|_| crate::Error::Storage("Failed to send publish".to_string()))?;
 
+        // Sessions manage their own kind 1060 subscriptions
+        // Load existing sessions and set up their subscriptions
+        let mut records = self.user_records.lock().unwrap();
+        for user_record in records.values_mut() {
+            for device_record in user_record.device_records.values_mut() {
+                if let Some(ref mut session) = device_record.active_session {
+                    session.set_event_tx(self.event_tx.clone());
+                    let _ = session.subscribe_to_messages();
+                }
+                for session in &mut device_record.inactive_sessions {
+                    session.set_event_tx(self.event_tx.clone());
+                    let _ = session.subscribe_to_messages();
+                }
+            }
+        }
+
         Ok(())
     }
 
     pub fn send_text(&self, recipient: Pubkey, text: String) -> Result<Vec<String>> {
-        // Setup recipient if not already done (triggers invite subscription)
-        if recipient != self.our_public_key {
-            let _ = self.setup_user(recipient);
-        }
+        eprintln!("🚀 send_text called: recipient={}, text_len={}", &hex::encode(recipient.bytes())[..16], text.len());
 
-        // Also send to self (all own devices)
-        let _ = self.setup_user(self.our_public_key);
+        if text.trim().is_empty() {
+            eprintln!("⚠️  Ignoring empty text send");
+            return Ok(Vec::new());
+        }
 
         let mut event_ids = Vec::new();
         let mut user_records = self.user_records.lock().unwrap();
 
+        // Check if recipient has any active sessions
+        let has_recipient_sessions = user_records.get(&recipient)
+            .map(|record| {
+                let count = record.device_records.values().filter(|dr| dr.active_session.is_some()).count();
+                eprintln!("  Recipient {} has {} active sessions", &hex::encode(recipient.bytes())[..16], count);
+                count > 0
+            })
+            .unwrap_or_else(|| {
+                eprintln!("  Recipient {} not in user_records yet", &hex::encode(recipient.bytes())[..16]);
+                false
+            });
+
+        // If no sessions exist, queue the message and setup user to fetch invites (if not already setup)
+        if !has_recipient_sessions {
+            drop(user_records);
+
+            // Setup recipient to subscribe to their invites (only if not already done)
+            let needs_setup = {
+                let pending = self.pending_invites.lock().unwrap();
+                !pending.contains_key(&recipient)
+            };
+
+            if needs_setup {
+                if recipient != self.our_public_key {
+                    let _ = self.setup_user(recipient);
+                }
+                let _ = self.setup_user(self.our_public_key);
+            }
+
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let pending_msg = PendingMessage {
+                text: text.clone(),
+                timestamp,
+                first_sent_at: None,
+            };
+
+            self.pending_messages
+                .lock()
+                .unwrap()
+                .entry(recipient)
+                .or_insert_with(VecDeque::new)
+                .push_back(pending_msg);
+
+            eprintln!("📮 Queued message to {} (no active sessions)", &hex::encode(recipient.bytes())[..16]);
+
+            return Ok(event_ids);
+        }
+
+        // Build event with p-tag for recipient (iris-client compatibility)
+        let event = nostr::EventBuilder::text_note(&text)
+            .tag(nostr::Tag::parse(&["p".to_string(), hex::encode(recipient.bytes())])
+                .map_err(|e| crate::Error::InvalidEvent(e.to_string()))?)
+            .build(nostr::PublicKey::from_slice(self.our_public_key.bytes())?);
+
         // Send to recipient's devices
         if let Some(recipient_record) = user_records.get_mut(&recipient) {
-            let mut active_sessions = recipient_record.get_active_sessions_mut();
-            for session in active_sessions.iter_mut() {
-                match session.send(text.clone()) {
-                    Ok(unsigned_event) => {
-                        if let Some(id) = unsigned_event.id {
-                            event_ids.push(id.to_string());
-                        }
-                        let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
+            for session in recipient_record.get_active_sessions_mut().iter_mut() {
+                match session.send_event(event.clone()) {
+                    Ok(signed_event) => {
+                        event_ids.push(signed_event.id.to_string());
+                        let _ = self.event_tx.send(SessionManagerEvent::PublishSigned(signed_event));
                     }
                     Err(_) => continue,
                 }
             }
         }
 
-        // Send to own devices (unless sending to self)
+        // Send to own devices (for multi-device sync), unless sending to self
         if recipient != self.our_public_key {
             if let Some(self_record) = user_records.get_mut(&self.our_public_key) {
-                let active_sessions = self_record.get_active_sessions_mut();
-                for session in active_sessions {
-                    match session.send(text.clone()) {
-                        Ok(unsigned_event) => {
-                            if let Some(id) = unsigned_event.id {
-                                event_ids.push(id.to_string());
-                            }
-                            let _ = self.event_tx.send(SessionManagerEvent::Publish(unsigned_event));
+                for session in self_record.get_active_sessions_mut().iter_mut() {
+                    match session.send_event(event.clone()) {
+                        Ok(signed_event) => {
+                            event_ids.push(signed_event.id.to_string());
+                            let _ = self.event_tx.send(SessionManagerEvent::PublishSigned(signed_event));
                         }
                         Err(_) => continue,
                     }
@@ -144,10 +217,19 @@ impl SessionManager {
             }
         }
 
+        if !event_ids.is_empty() {
+            eprintln!("📤 Sent message to {} ({} sessions)", &hex::encode(recipient.bytes())[..16], event_ids.len());
+        }
+
         drop(user_records);
         let _ = self.store_user_record(&recipient);
         if recipient != self.our_public_key {
             let _ = self.store_user_record(&self.our_public_key);
+        }
+
+        // If we successfully sent to at least one session, try to flush any pending messages
+        if !event_ids.is_empty() {
+            self.flush_pending_messages(recipient);
         }
 
         Ok(event_ids)
@@ -175,6 +257,36 @@ impl SessionManager {
             .sum()
     }
 
+    pub fn debug_session_keys(&self) -> String {
+        let records = self.user_records.lock().unwrap();
+        let mut output = String::new();
+
+        for (user_pk, user_record) in records.iter() {
+            for (device_id, device_record) in &user_record.device_records {
+                if let Some(ref session) = device_record.active_session {
+                    output.push_str(&format!("Session with {}[{}]:\n", &hex::encode(user_pk.bytes())[..16], device_id));
+                    if let Some(our_current) = &session.state.our_current_nostr_key {
+                        output.push_str(&format!("  our_current:    {}\n", &hex::encode(our_current.public_key.bytes())[..16]));
+                    } else {
+                        output.push_str("  our_current:    None\n");
+                    }
+                    output.push_str(&format!("  our_next:       {}\n", &hex::encode(session.state.our_next_nostr_key.public_key.bytes())[..16]));
+                    if let Some(their_current) = session.state.their_current_nostr_public_key {
+                        output.push_str(&format!("  their_current:  {}\n", &hex::encode(their_current.bytes())[..16]));
+                    } else {
+                        output.push_str("  their_current:  None\n");
+                    }
+                    if let Some(their_next) = session.state.their_next_nostr_public_key {
+                        output.push_str(&format!("  their_next:     {}\n", &hex::encode(their_next.bytes())[..16]));
+                    } else {
+                        output.push_str("  their_next:     None\n");
+                    }
+                }
+            }
+        }
+        output
+    }
+
     pub fn get_our_pubkey(&self) -> Pubkey {
         self.our_public_key
     }
@@ -198,15 +310,82 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn setup_user(&self, user_pubkey: Pubkey) -> Result<()> {
-        let filter = Filter::new()
-            .kinds(vec![crate::INVITE_EVENT_KIND as u64])
-            .authors([user_pubkey.bytes()])
-            .build();
+    fn flush_pending_messages(&self, recipient: Pubkey) {
+        let mut pending_messages = self.pending_messages.lock().unwrap();
 
-        let filter_json = filter.json()?;
-        self.event_tx.send(SessionManagerEvent::Subscribe(filter_json))
-            .map_err(|_| crate::Error::Storage("Failed to send subscribe".to_string()))?;
+        if let Some(message_queue) = pending_messages.get_mut(&recipient) {
+            let current_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let mut messages_to_process = Vec::new();
+
+            // Process all pending messages
+            while let Some(msg) = message_queue.pop_front() {
+                messages_to_process.push(msg);
+            }
+
+            drop(pending_messages);
+
+            // Try to send each pending message
+            for mut pending_msg in messages_to_process {
+                match self.send_text(recipient, pending_msg.text.clone()) {
+                    Ok(event_ids) if !event_ids.is_empty() => {
+                        // Successfully sent to at least one session
+                        tracing::info!("Flushed pending message to {} (sent to {} sessions)", hex::encode(recipient.bytes()), event_ids.len());
+
+                        // Mark first send time if not set
+                        if pending_msg.first_sent_at.is_none() {
+                            pending_msg.first_sent_at = Some(current_time);
+                        }
+
+                        // Keep in queue for 5 seconds after first send (for additional devices)
+                        if let Some(first_sent) = pending_msg.first_sent_at {
+                            if current_time - first_sent < 5 {
+                                self.pending_messages
+                                    .lock()
+                                    .unwrap()
+                                    .entry(recipient)
+                                    .or_insert_with(VecDeque::new)
+                                    .push_back(pending_msg);
+                            } else {
+                                tracing::info!("Removing message from queue (sent 5+ seconds ago)");
+                            }
+                        }
+                    }
+                    _ => {
+                        // Failed to send or no sessions - re-queue the message
+                        self.pending_messages
+                            .lock()
+                            .unwrap()
+                            .entry(recipient)
+                            .or_insert_with(VecDeque::new)
+                            .push_back(pending_msg);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn setup_user(&self, user_pubkey: Pubkey) -> Result<()> {
+        // Check if already set up (has sessions or pending invite)
+        {
+            let user_records = self.user_records.lock().unwrap();
+            if user_records.contains_key(&user_pubkey) {
+                return Ok(());
+            }
+        }
+
+        {
+            let pending = self.pending_invites.lock().unwrap();
+            if pending.contains_key(&user_pubkey) {
+                return Ok(());
+            }
+        }
+
+        let pubsub = crate::ChannelPubSub::new(self.event_tx.clone());
+        crate::Invite::from_user(user_pubkey, &pubsub)?;
 
         self.pending_invites.lock().unwrap().insert(user_pubkey, Invite {
             inviter_ephemeral_public_key: Pubkey::new([0u8; 32]),
@@ -222,31 +401,45 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn process_received_event(&self, event: UnsignedEvent) {
+    pub fn process_received_event(&self, event: nostr::Event) {
         if event.kind.as_u16() == crate::INVITE_RESPONSE_KIND as u16 {
             if let Some(state) = self.invite_state.lock().unwrap().as_ref() {
-                if let Ok(Some((sess, invitee_pubkey, device_id))) = state.invite.process_invite_response(&event, state.our_identity_key) {
-                    if let Some(ref dev_id) = device_id {
-                        if dev_id != &self.device_id {
-                            let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
-                            if self.storage.get(&acceptance_key).ok().flatten().is_none() {
-                                let _ = self.storage.put(&acceptance_key, "1".to_string());
+                match state.invite.process_invite_response(&event, state.our_identity_key) {
+                    Ok(Some((mut sess, invitee_pubkey, device_id))) => {
+                        tracing::info!("✅ Accepted invite response from {}", &hex::encode(invitee_pubkey.bytes())[..16]);
 
-                                let mut records = self.user_records.lock().unwrap();
-                                let user_record = records
-                                    .entry(invitee_pubkey)
-                                    .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
-                                user_record.upsert_session(Some(dev_id), sess);
-                                drop(records);
+                        if let Some(ref dev_id) = device_id {
+                            if dev_id != &self.device_id {
+                                let acceptance_key = format!("invite-accept/{}/{}", hex::encode(invitee_pubkey.bytes()), dev_id);
+                                if self.storage.get(&acceptance_key).ok().flatten().is_none() {
+                                    let _ = self.storage.put(&acceptance_key, "1".to_string());
 
-                                let _ = self.store_user_record(&invitee_pubkey);
+                                    sess.set_event_tx(self.event_tx.clone());
+                                    let _ = sess.subscribe_to_messages();
+
+                                    let mut records = self.user_records.lock().unwrap();
+                                    let user_record = records
+                                        .entry(invitee_pubkey)
+                                        .or_insert_with(|| UserRecord::new(hex::encode(invitee_pubkey.bytes())));
+                                    user_record.upsert_session(Some(dev_id), sess);
+                                    drop(records);
+
+                                    let _ = self.store_user_record(&invitee_pubkey);
+
+                                    // Try to flush any pending messages for this user
+                                    self.flush_pending_messages(invitee_pubkey);
+                                }
                             }
                         }
                     }
+                    Ok(None) => {}
+                    Err(_) => {}
                 }
             }
         } else if event.kind.as_u16() == crate::INVITE_EVENT_KIND as u16 {
             if let Ok(invite) = Invite::from_event(&event) {
+                tracing::info!("📨 Received invite from {}", &hex::encode(invite.inviter.bytes())[..16]);
+
                 if let Some(ref dev_id) = invite.device_id {
                     let inviter = invite.inviter;
 
@@ -261,8 +454,12 @@ impl SessionManager {
                         drop(records);
 
                         match invite.accept(self.our_public_key, self.our_identity_key, Some(self.device_id.clone())) {
-                            Ok((session, event)) => {
-                                let _ = self.event_tx.send(SessionManagerEvent::Publish(event));
+                            Ok((mut session, event)) => {
+                                tracing::info!("✅ Accepting invite from {}", &hex::encode(inviter.bytes())[..16]);
+                                let _ = self.event_tx.send(SessionManagerEvent::PublishSigned(event));
+
+                                session.set_event_tx(self.event_tx.clone());
+                                let _ = session.subscribe_to_messages();
 
                                 let mut records = self.user_records.lock().unwrap();
                                 let user_record = records
@@ -272,6 +469,9 @@ impl SessionManager {
                                 drop(records);
 
                                 let _ = self.store_user_record(&inviter);
+
+                                // Try to flush any pending messages for this user
+                                self.flush_pending_messages(inviter);
                             }
                             Err(_) => {}
                         }
@@ -279,18 +479,15 @@ impl SessionManager {
                 }
             }
         } else if event.kind.as_u16() == crate::MESSAGE_EVENT_KIND as u16 {
-            // Handle encrypted message
-            // NOTE: event.pubkey is random (for privacy), so we must try all sessions
-            let event_id = event.id.map(|id| id.to_string());
+            let event_id = Some(event.id.to_string());
             let mut user_records = self.user_records.lock().unwrap();
 
-            // Try to decrypt with ALL sessions (active + inactive) from all users
             for (user_pubkey, user_record) in user_records.iter_mut() {
                 let mut all_sessions = user_record.get_all_sessions_mut();
 
                 for session in all_sessions.iter_mut() {
                     if let Ok(Some(plaintext)) = session.receive(&event) {
-                        // Message decrypted successfully - emit it
+                        tracing::info!("💬 Decrypted message from {}: {}", &hex::encode(user_pubkey.bytes())[..16], &plaintext[..plaintext.len().min(50)]);
                         let sender = *user_pubkey;
                         drop(user_records);
                         let _ = self.event_tx.send(SessionManagerEvent::DecryptedMessage {

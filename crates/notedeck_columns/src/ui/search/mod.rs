@@ -71,12 +71,16 @@ impl<'a, 'd> SearchView<'a, 'd> {
             self.note_context.clipboard,
         );
 
-        search_resp.process(self.query);
+        let mut body_resp = BodyResponse::none();
+
+        if let Some(action) = search_resp.process(self.query) {
+            body_resp.output = Some(action);
+            return body_resp;
+        }
 
         let keyboard_resp = handle_keyboard_navigation(ui, &mut self.query.selected_index, &self.query.user_results);
 
         let mut search_action = None;
-        let mut body_resp = BodyResponse::none();
         match &self.query.state {
             SearchState::New | SearchState::Navigating | SearchState::Typing(TypingType::Mention(_)) => {
                 if !self.query.string.is_empty() && !self.query.string.starts_with('@') {
@@ -197,8 +201,13 @@ impl<'a, 'd> SearchView<'a, 'd> {
         )).clicked() || (is_selected && keyboard_resp.enter_pressed);
 
         if search_posts_clicked {
+            let search_type = SearchType::get_type(&self.query.string);
+            // If it's a profile (npub), navigate to the profile instead of searching posts
+            if let SearchType::Profile(pubkey) = search_type {
+                return Some(SearchAction::NavigateToProfile(pubkey));
+            }
             return Some(SearchAction::NewSearch {
-                search_type: SearchType::get_type(&self.query.string),
+                search_type,
                 new_search_text: self.query.string.clone(),
             });
         }
@@ -411,7 +420,7 @@ struct SearchResponse {
 }
 
 impl SearchResponse {
-    fn process(self, state: &mut SearchQueryState) {
+    fn process(self, state: &mut SearchQueryState) -> Option<SearchViewAction> {
         if self.requested_focus {
             state.focus_state = FocusState::RequestedFocus;
         } else if state.focus_state == FocusState::RequestedFocus && !self.input_changed {
@@ -419,6 +428,16 @@ impl SearchResponse {
         }
 
         if self.input_changed {
+            // Check if input is a valid npub and auto-navigate
+            if state.string.len() == 63 && state.string.starts_with("npub1") {
+                if let Ok(pk) = Pubkey::try_from_bech32_string(&state.string, false) {
+                    state.add_recent_profile(pk, state.string.clone());
+                    state.string.clear();
+                    state.selected_index = -1;
+                    return Some(SearchViewAction::NavigateToProfile(pk));
+                }
+            }
+
             if state.string.starts_with('@') {
                 state.selected_index = -1;
                 if let Some(mention_text) = state.string.get(1..) {
@@ -433,6 +452,8 @@ impl SearchResponse {
                 state.selected_index = -1;
             }
         }
+
+        None
     }
 }
 

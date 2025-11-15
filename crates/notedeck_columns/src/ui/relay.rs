@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 use crate::nav::BodyResponse;
 use crate::ui::{Preview, PreviewConfig};
-use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
-use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction};
+use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2, ScrollArea};
+use enostr::{MutualFollowDetector, RelayPool, RelayStatus, Pubkey};
+use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction, Images, Accounts};
 use notedeck_ui::app_images;
-use notedeck_ui::{colors::PINK, padding};
+use notedeck_ui::{colors::PINK, padding, ProfilePic};
+use nostrdb::{Filter, Ndb, Transaction};
 use tracing::debug;
 
 use super::widgets::styled_button;
@@ -15,6 +16,9 @@ pub struct RelayView<'a> {
     pool: &'a RelayPool,
     id_string_map: &'a mut HashMap<Id, String>,
     i18n: &'a mut Localization,
+    ndb: &'a Ndb,
+    img_cache: &'a mut Images,
+    accounts: &'a Accounts,
 }
 
 impl RelayView<'_> {
@@ -41,6 +45,8 @@ impl RelayView<'_> {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         let mut action = None;
+
+                        // Show traditional relay list first
                         if let Some(relay_to_remove) = self.show_relays(ui) {
                             action = Some(RelayAction::Remove(relay_to_remove));
                         }
@@ -48,6 +54,13 @@ impl RelayView<'_> {
                         if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
                             action = Some(RelayAction::Add(relay_to_add));
                         }
+
+                        // Separator
+                        ui.add_space(24.0);
+
+                        // Show WebRTC peers section with its own heading
+                        self.show_webrtc_section(ui);
+
                         action
                     })
             })
@@ -66,16 +79,272 @@ impl<'a> RelayView<'a> {
         pool: &'a RelayPool,
         id_string_map: &'a mut HashMap<Id, String>,
         i18n: &'a mut Localization,
+        ndb: &'a Ndb,
+        img_cache: &'a mut Images,
+        accounts: &'a Accounts,
     ) -> Self {
         RelayView {
             pool,
             id_string_map,
             i18n,
+            ndb,
+            img_cache,
+            accounts,
         }
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
+    }
+
+    /// Show WebRTC peers section
+    fn show_webrtc_section(&mut self, ui: &mut Ui) {
+        let peer_count = self.pool.webrtc_peer_count();
+
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(
+                    RichText::new("WebRTC Peers")
+                        .text_style(NotedeckTextStyle::Heading2.text_style()),
+                );
+            });
+        });
+
+        ui.add_space(8.0);
+
+        if peer_count == 0 {
+            relay_frame(ui).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("No peers connected")
+                            .text_style(NotedeckTextStyle::Body.text_style())
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                });
+            });
+        } else {
+            // Show connected peers list
+            self.show_connected_peers(ui);
+        }
+
+        ui.add_space(8.0);
+
+        // Show mutual follows section
+        self.show_mutual_follows(ui);
+    }
+
+    /// Show connected peers with profile pics and names
+    fn show_connected_peers(&mut self, ui: &mut Ui) {
+        let txn = Transaction::new(self.ndb).expect("txn");
+        let peer_pubkeys = self.pool.webrtc_peer_pubkeys();
+
+        relay_frame(ui).show(ui, |ui| {
+            ui.label(
+                RichText::new("Connected Peers")
+                    .text_style(NotedeckTextStyle::Body.text_style())
+                    .strong(),
+            );
+            ui.add_space(4.0);
+
+            if peer_pubkeys.is_empty() {
+                ui.label(
+                    RichText::new("Connected to peers via WebRTC for faster messaging")
+                        .text_style(NotedeckTextStyle::Body.text_style())
+                        .color(ui.visuals().weak_text_color()),
+                );
+            } else {
+                // Display each connected peer
+                for peer_pubkey_hex in peer_pubkeys {
+                    // Parse pubkey
+                    if let Ok(pubkey) = Pubkey::from_hex(&peer_pubkey_hex) {
+                        ui.horizontal(|ui| {
+                            // Get profile from nostrdb
+                            let profile = self.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()).ok();
+
+                            // Profile picture (32px)
+                            ui.add(
+                                &mut ProfilePic::from_profile_or_default(
+                                    self.img_cache,
+                                    profile.as_ref()
+                                )
+                                .size(32.0)
+                            );
+
+                            ui.add_space(8.0);
+
+                            // Display name
+                            let name = profile
+                                .and_then(|p| p.record().profile())
+                                .and_then(|p| p.name())
+                                .unwrap_or_else(|| &peer_pubkey_hex[..8]);
+
+                            ui.label(
+                                RichText::new(name)
+                                    .text_style(NotedeckTextStyle::Body.text_style())
+                            );
+
+                            ui.add_space(8.0);
+
+                            // Online status indicator
+                            if self.pool.is_webrtc_peer_online(&peer_pubkey_hex) {
+                                ui.label(
+                                    RichText::new("●")
+                                        .color(egui::Color32::from_rgb(0x00, 0xFF, 0x00))
+                                        .text_style(NotedeckTextStyle::Body.text_style())
+                                );
+                                ui.label(
+                                    RichText::new("online")
+                                        .text_style(NotedeckTextStyle::Small.text_style())
+                                        .color(ui.visuals().weak_text_color())
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("●")
+                                        .color(ui.visuals().weak_text_color())
+                                        .text_style(NotedeckTextStyle::Body.text_style())
+                                );
+                                ui.label(
+                                    RichText::new("offline")
+                                        .text_style(NotedeckTextStyle::Small.text_style())
+                                        .color(ui.visuals().weak_text_color())
+                                );
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Show mutual follows list in scrollable container
+    fn show_mutual_follows(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Mutual Follows")
+                    .text_style(NotedeckTextStyle::Heading3.text_style()),
+            );
+            ui.label(
+                RichText::new("(eligible for WebRTC)")
+                    .text_style(NotedeckTextStyle::Body.text_style())
+                    .color(ui.visuals().weak_text_color()),
+            );
+        });
+
+        ui.add_space(8.0);
+
+        relay_frame(ui).show(ui, |ui| {
+            // Get current user's pubkey
+            let our_pubkey = self.accounts.get_selected_account().key.pubkey;
+
+            // Create transaction first for all queries
+            let txn = Transaction::new(self.ndb).expect("txn");
+
+            // Create detector and get mutual follows
+            let detector = MutualFollowDetector::new(self.ndb.clone());
+            let mutual_follows = detector.get_mutual_follows(&txn, our_pubkey.bytes());
+
+            // Scrollable container for mutual follows
+            ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if !mutual_follows.is_empty() {
+                        // Convert to vec with online status
+                        let mut follows_with_status: Vec<_> = mutual_follows.iter()
+                            .map(|pk| {
+                                let pk_hex = hex::encode(pk);
+                                let is_online = self.pool.is_webrtc_peer_online(&pk_hex);
+                                (pk, is_online)
+                            })
+                            .collect();
+
+                        // Sort online first
+                        follows_with_status.sort_by_key(|(_, online)| !online);
+
+                        // Display each mutual follow
+                        for (pubkey, is_online) in follows_with_status {
+                            self._show_mutual_follow_entry(ui, &txn, pubkey, is_online);
+                        }
+                    } else {
+                        // Show debug info to help troubleshoot
+                        ui.label(
+                            RichText::new("No mutual follows found")
+                                .text_style(NotedeckTextStyle::Body.text_style())
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("(Check console logs for debug info)")
+                                .text_style(NotedeckTextStyle::Small.text_style())
+                                .color(ui.visuals().weak_text_color()),
+                        );
+
+                        // Try to show basic follow count for debugging
+                        let filter = Filter::new()
+                            .authors([our_pubkey.bytes()])
+                            .kinds([3])
+                            .limit(1)
+                            .build();
+
+                        if let Ok(results) = self.ndb.query(&txn, &[filter], 1) {
+                            if let Some(note) = results.first() {
+                                let tag_count = note.note.tags().count();
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("You follow {} people", tag_count))
+                                        .text_style(NotedeckTextStyle::Small.text_style())
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                            }
+                        }
+                    }
+                });
+        });
+    }
+
+    /// Helper to display a single mutual follow entry
+    fn _show_mutual_follow_entry(&mut self, ui: &mut Ui, txn: &Transaction, pubkey: &[u8; 32], is_online: bool) {
+        ui.horizontal(|ui| {
+            // Get profile from nostrdb
+            let profile = self.ndb.get_profile_by_pubkey(txn, pubkey).ok();
+
+            // Profile picture (32px)
+            ui.add(
+                &mut ProfilePic::from_profile_or_default(
+                    self.img_cache,
+                    profile.as_ref()
+                )
+                .size(32.0)
+            );
+
+            ui.add_space(8.0);
+
+            // Display name
+            let name = profile
+                .and_then(|p| p.record().profile())
+                .and_then(|p| p.name())
+                .unwrap_or("Unknown");
+
+            ui.label(
+                RichText::new(name)
+                    .text_style(NotedeckTextStyle::Body.text_style())
+            );
+
+            // Online indicator
+            if is_online {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("●")
+                            .color(egui::Color32::from_rgb(0x00, 0xFF, 0x00))
+                            .text_style(NotedeckTextStyle::Body.text_style())
+                    );
+                });
+            }
+        });
+
+        ui.add_space(4.0);
     }
 
     /// Show the current relays and return a relay the user selected to delete
@@ -310,7 +579,15 @@ mod preview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
-            RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
+            RelayView::new(
+                app.pool,
+                &mut id_string_map,
+                app.i18n,
+                app.ndb,
+                app.img_cache,
+                app.accounts,
+            )
+            .ui(ui);
             AppResponse::none()
         }
     }

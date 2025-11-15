@@ -21,3 +21,15 @@ mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
+bytes = "1.10"
+uuid = { workspace = true }
+
+# WebRTC dependencies
+webrtc = { workspace = true }
+webrtc-data = { workspace = true }
+webrtc-ice = { workspace = true }
+stun = { workspace = true }
+sdp = { workspace = true }
+webrtc-util = { workspace = true }
+interceptor = { workspace = true }
+parking_lot = { workspace = true }

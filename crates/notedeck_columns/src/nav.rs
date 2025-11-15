@@ -8,7 +8,7 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
     route::{Route, Router, SingletonRouter},
-    subscriptions::{new_sub_id, SubKind, Subscriptions},
+    subscriptions::Subscriptions,
     timeline::{
         kind::ListKind,
         route::{render_thread_route, render_timeline_route},
@@ -36,14 +36,14 @@ use egui::{scroll_area::ScrollAreaOutput, ScrollArea};
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::{ClientMessage, ProfileState, RelayPool};
+use enostr::{ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, tr, ui::is_narrow, Accounts, AppContext, NoteAction, NoteCache,
     NoteContext, RelayAction,
 };
 use notedeck_ui::NoteOptions;
-use tracing::{error, info};
+use tracing::error;
 
 /// The result of processing a nav response
 pub enum ProcessNavResult {
@@ -706,9 +706,16 @@ fn render_nav_body(
                 }
             })
         }
-        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map, ctx.i18n)
-            .ui(ui)
-            .map_output(RenderNavAction::RelayAction),
+        Route::Relays => RelayView::new(
+            ctx.pool,
+            &mut app.view_state.id_string_map,
+            ctx.i18n,
+            ctx.ndb,
+            ctx.img_cache,
+            ctx.accounts,
+        )
+        .ui(ui)
+        .map_output(RenderNavAction::RelayAction),
 
         Route::Settings(route) => SettingsView::new(
             ctx.settings.get_settings_mut(),
@@ -1068,6 +1075,9 @@ fn render_nav_body(
             let action = None;
 
             // Auto-navigate to new chat if no chats exist
+            // Check if there are any messages in memory (current session or persisted)
+            let has_any_messages = !note_context.chat_messages.lock().unwrap().is_empty();
+
             let has_chats = if let Some(manager) = note_context.session_manager {
                 let user_count = manager.get_user_pubkeys().len();
                 let our_pubkey = manager.get_our_pubkey();
@@ -1079,9 +1089,11 @@ fn render_nav_body(
                     .get(&self_chat_key)
                     .map_or(false, |msgs| !msgs.is_empty());
 
-                user_count > 0 || has_self_messages
+                // Has chats if: active sessions OR self-messages OR any messages in memory
+                user_count > 0 || has_self_messages || has_any_messages
             } else {
-                false
+                // No SessionManager, check if there are any messages in memory
+                has_any_messages
             };
 
             if !has_chats {
@@ -1093,12 +1105,14 @@ fn render_nav_body(
             }
 
             let scroll_resp = ScrollArea::vertical().show(ui, |ui| {
+                let account_pubkey = note_context.accounts.get_selected_account().key.pubkey.bytes();
                 crate::ui::MessagesView::new(
                     note_context.i18n,
                     note_context.img_cache,
                     note_context.ndb,
                     note_context.session_manager,
                     note_context.chat_messages,
+                    account_pubkey,
                 )
                 .ui(ui)
             });

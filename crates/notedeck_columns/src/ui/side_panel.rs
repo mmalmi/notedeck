@@ -765,9 +765,14 @@ fn dave_button() -> impl Widget {
 
 fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: Option<&Route>) -> egui::Response {
     let connected_count = pool.relays.iter().filter(|r| matches!(r.status(), RelayStatus::Connected)).count();
-    let total_count = pool.relays.len();
+    let webrtc_peer_count = pool.webrtc_peer_count();
+    let total_count = connected_count + webrtc_peer_count;
+    let relay_total = pool.relays.len();
 
-    let indicator_color = if total_count > 1 {
+    let indicator_color = if webrtc_peer_count > 0 {
+        // Purple/info color when WebRTC peers connected (iris-compatible)
+        egui::Color32::from_rgb(0x88, 0x66, 0xFF)
+    } else if relay_total > 1 {
         if connected_count == 0 {
             egui::Color32::from_rgb(0xFF, 0x66, 0x66)
         } else if connected_count == 1 {
@@ -802,7 +807,7 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
         painter.rect_filled(bar_rect, 0.0, indicator_color);
     }
 
-    let count_text = format!("{}", connected_count);
+    let count_text = format!("{}", total_count);
     let font_id = egui::FontId::proportional(10.0);
 
     painter.text(
@@ -813,9 +818,15 @@ fn connectivity_indicator(ui: &mut egui::Ui, pool: &RelayPool, _current_route: O
         indicator_color,
     );
 
+    let tooltip_text = if webrtc_peer_count > 0 {
+        format!("{} relays, {} peers connected", connected_count, webrtc_peer_count)
+    } else {
+        format!("{}/{} relays connected", connected_count, relay_total)
+    };
+
     helper.take_animation_response()
         .on_hover_cursor(CursorIcon::PointingHand)
-        .on_hover_text(format!("{}/{} relays connected", connected_count, total_count))
+        .on_hover_text(tooltip_text)
 }
 
 fn messages_button(current_route: Option<&Route>) -> impl Widget + '_ {

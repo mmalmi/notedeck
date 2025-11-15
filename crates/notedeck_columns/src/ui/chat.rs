@@ -34,6 +34,7 @@ impl<'a> ChatView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        eprintln!("💬 ChatView.ui() called for chat_id: {}", &self.chat_id);
         ui.vertical(|ui| {
             self.render_header(ui);
 
@@ -66,6 +67,10 @@ impl<'a> ChatView<'a> {
                                     });
 
                                 if let Some(pk) = chat_pk {
+                                    // Setup DM discovery for this user (idempotent)
+                                    if let Some(manager) = self.session_manager {
+                                        let _ = manager.setup_user(pk);
+                                    }
                                     let chat_key = get_chat_key(&pk);
                                     let messages = self.chat_messages
                                         .lock()
@@ -112,7 +117,9 @@ impl<'a> ChatView<'a> {
                 },
             );
 
+            eprintln!("📝 About to call render_input");
             self.render_input(ui);
+            eprintln!("📝 render_input completed");
         });
     }
 
@@ -252,8 +259,19 @@ impl<'a> ChatView<'a> {
                         .unwrap_or(crate::ui::search::FocusState::ShouldRequestFocus)
                 });
 
-                let text_resp = input_frame.show(ui, |ui| {
-                    ui.add(
+                let send_button_size = 32.0;
+                let spacing = 8.0;
+
+                // Allocate UI for input, reserving space for send button
+                let available = ui.available_width();
+                let input_allocated_width = available - send_button_size - spacing;
+
+                let text_resp = ui.allocate_ui_with_layout(
+                    egui::vec2(input_allocated_width, ui.available_height()),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        input_frame.show(ui, |ui| {
+                    let resp = ui.add(
                         egui::TextEdit::singleline(&mut input_text)
                             .hint_text(tr!(
                                 self.i18n,
@@ -262,15 +280,23 @@ impl<'a> ChatView<'a> {
                             ))
                             .desired_width(ui.available_width())
                             .frame(false)
-                    )
-                }).inner;
+                    );
+                    if resp.changed() {
+                        eprintln!("💡 Input changed! New text: '{}'", input_text);
+                    }
+                    resp
+                }).inner
+                    }).inner;
 
                 if focus_state == crate::ui::search::FocusState::ShouldRequestFocus {
+                    eprintln!("🔍 Requesting focus for input");
                     text_resp.request_focus();
                     focus_state = crate::ui::search::FocusState::RequestedFocus;
                 } else if focus_state == crate::ui::search::FocusState::RequestedFocus {
                     focus_state = crate::ui::search::FocusState::Navigating;
                 }
+
+                eprintln!("🔍 Input has_focus: {}, focus_state: {:?}", text_resp.has_focus(), focus_state);
 
                 ui.ctx().data_mut(|d| d.insert_temp(focus_id, focus_state));
 
@@ -278,9 +304,8 @@ impl<'a> ChatView<'a> {
                     d.insert_temp(input_id, input_text.clone());
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(spacing);
 
-                let send_button_size = 32.0;
                 let (rect, send_resp) = ui.allocate_exact_size(
                     Vec2::splat(send_button_size),
                     egui::Sense::click()
@@ -319,16 +344,26 @@ impl<'a> ChatView<'a> {
                     egui::Stroke::new(2.0, egui::Color32::WHITE),
                 );
 
-                let should_send = (text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    || send_resp.clicked();
+                let enter_pressed = text_resp.lost_focus() && text_resp.ctx.input(|i| i.key_down(egui::Key::Enter) && !i.modifiers.shift);
+                let button_clicked = send_resp.clicked();
+
+                if enter_pressed || button_clicked {
+                    eprintln!("Send trigger: enter={}, click={}, text='{}'", enter_pressed, button_clicked, input_text);
+                }
+
+                let should_send = enter_pressed || button_clicked;
 
                 if should_send && !input_text.trim().is_empty() {
+                    eprintln!("🎯 Attempting to send message to {}", &self.chat_id);
                     if let Some(manager) = self.session_manager {
+                        eprintln!("✅ SessionManager exists, calling send_text");
                         if let Ok(pubkey_bytes) = hex::decode(&self.chat_id) {
+                            eprintln!("   Decoded pubkey successfully, len={}", pubkey_bytes.len());
                             if pubkey_bytes.len() == 32 {
                                 let mut bytes = [0u8; 32];
                                 bytes.copy_from_slice(&pubkey_bytes);
                                 let recipient = enostr::Pubkey::new(bytes);
+                                eprintln!("   Created recipient pubkey");
 
                                 // Optimistically store the message locally
                                 let our_pubkey = manager.get_our_pubkey();
@@ -350,8 +385,10 @@ impl<'a> ChatView<'a> {
                                     .or_insert_with(Vec::new)
                                     .push(msg);
 
+                                eprintln!("   About to call manager.send_text()");
                                 match manager.send_text(recipient, input_text.clone()) {
                                     Ok(event_ids) => {
+                                        eprintln!("   send_text returned {} event_ids", event_ids.len());
                                         if event_ids.is_empty() {
                                             tracing::warn!("No active sessions with {}. Message queued for when session establishes.", &self.chat_id);
                                         } else {
@@ -365,12 +402,13 @@ impl<'a> ChatView<'a> {
                                         ui.ctx().data_mut(|d| d.insert_temp(focus_id, crate::ui::search::FocusState::ShouldRequestFocus));
                                     }
                                     Err(e) => {
-                                        tracing::error!("Failed to send message: {}", e);
+                                        tracing::error!("❌ Failed to send message: {}", e);
                                     }
                                 }
                             }
                         }
                     } else {
+                        eprintln!("   SessionManager is None!");
                         tracing::warn!("SessionManager not initialized, cannot send message");
                     }
                 }

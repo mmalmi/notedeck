@@ -1,4 +1,5 @@
 use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
+use crate::relay::webrtc::WebRTCRelay;
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
@@ -35,6 +36,7 @@ pub struct PoolEventBuf {
 pub enum PoolRelay {
     Websocket(WebsocketRelay),
     Multicast(MulticastRelay),
+    WebRTC(WebRTCRelay),
 }
 
 pub struct WebsocketRelay {
@@ -49,6 +51,7 @@ impl PoolRelay {
         match self {
             Self::Websocket(wsr) => wsr.relay.url.as_str(),
             Self::Multicast(_wsr) => "multicast",
+            Self::WebRTC(rtc) => rtc.url(),
         }
     }
 
@@ -58,6 +61,9 @@ impl PoolRelay {
                 wsr.relay.status = status;
             }
             Self::Multicast(_mcr) => {}
+            Self::WebRTC(rtc) => {
+                rtc.status = status;
+            }
         }
     }
 
@@ -65,6 +71,7 @@ impl PoolRelay {
         match self {
             Self::Websocket(recvr) => recvr.relay.receiver.try_recv(),
             Self::Multicast(recvr) => recvr.try_recv(),
+            Self::WebRTC(_rtc) => None, // WebRTC uses async channels
         }
     }
 
@@ -72,6 +79,7 @@ impl PoolRelay {
         match self {
             Self::Websocket(wsr) => wsr.relay.status,
             Self::Multicast(mcr) => mcr.status,
+            Self::WebRTC(rtc) => rtc.status,
         }
     }
 
@@ -89,6 +97,12 @@ impl PoolRelay {
                 }
                 Ok(())
             }
+
+            Self::WebRTC(_rtc) => {
+                // WebRTC send will be implemented async
+                // For now, this is a placeholder
+                Ok(())
+            }
         }
     }
 
@@ -102,6 +116,10 @@ impl PoolRelay {
 
     pub fn multicast(wakeup: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self> {
         Ok(Self::Multicast(setup_multicast_relay(wakeup)?))
+    }
+
+    pub fn webrtc(enable_stun_server: bool) -> Result<Self> {
+        Ok(Self::WebRTC(WebRTCRelay::new(enable_stun_server)?))
     }
 }
 
@@ -140,6 +158,51 @@ impl RelayPool {
             ping_rate: Duration::from_secs(45),
             debug: None,
         }
+    }
+
+    /// Get the number of connected WebRTC peers across all WebRTC relays (synchronous)
+    pub fn webrtc_peer_count(&self) -> usize {
+        let mut count = 0;
+        for relay in &self.relays {
+            if let PoolRelay::WebRTC(rtc) = relay {
+                count += rtc.connected_peer_count();
+            }
+        }
+        count
+    }
+
+    /// Get all connected WebRTC peer pubkeys (synchronous, cached)
+    pub fn webrtc_peer_pubkeys(&self) -> Vec<String> {
+        let mut peers = Vec::new();
+        for relay in &self.relays {
+            if let PoolRelay::WebRTC(rtc) = relay {
+                peers.extend(rtc.get_peer_pubkeys());
+            }
+        }
+        peers
+    }
+
+    /// Get all online WebRTC peer pubkeys (synchronous, cached)
+    pub fn webrtc_online_peers(&self) -> Vec<String> {
+        let mut peers = Vec::new();
+        for relay in &self.relays {
+            if let PoolRelay::WebRTC(rtc) = relay {
+                peers.extend(rtc.get_online_peers());
+            }
+        }
+        peers
+    }
+
+    /// Check if a peer is online across all WebRTC relays
+    pub fn is_webrtc_peer_online(&self, pubkey: &str) -> bool {
+        for relay in &self.relays {
+            if let PoolRelay::WebRTC(rtc) = relay {
+                if rtc.is_peer_online(pubkey) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn add_multicast_relay(
@@ -227,6 +290,9 @@ impl RelayPool {
 
             match relay {
                 PoolRelay::Multicast(_) => {}
+                PoolRelay::WebRTC(_) => {
+                    // WebRTC connections don't need pinging
+                }
                 PoolRelay::Websocket(relay) => {
                     match relay.relay.status {
                         RelayStatus::Disconnected => {
@@ -385,6 +451,7 @@ impl RelayPool {
                                     wsr.relay.sender.send(WsMessage::Pong(bs.to_owned()));
                                 }
                                 PoolRelay::Multicast(_mcr) => {}
+                                PoolRelay::WebRTC(_) => {}
                             }
                         }
                     }

@@ -12,6 +12,7 @@ pub fn styled_button(text: &str, fill_color: egui::Color32) -> impl Widget + '_ 
 
 pub struct UserRow<'a> {
     profile: Option<&'a ProfileRecord<'a>>,
+    #[allow(dead_code)]
     pubkey: &'a Pubkey,
     cache: &'a mut Images,
     accounts: Option<&'a Accounts>,
@@ -84,7 +85,8 @@ impl<'a> Widget for UserRow<'a> {
         let mut profile_pic = ProfilePic::new(self.cache, get_profile_url(self.profile))
             .size(pic_size);
 
-        if let Some(accounts) = self.accounts {
+        if let Some(_accounts) = self.accounts {
+            // TODO: Add WoT badge or follow check here
         }
 
         ui.put(pfp_rect, &mut profile_pic);

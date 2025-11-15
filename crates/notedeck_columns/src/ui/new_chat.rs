@@ -46,7 +46,7 @@ impl<'a> NewChatView<'a> {
             ui.add_space(20.0);
 
             ui.label(
-                RichText::new("Search users or paste npub/hex pubkey")
+                RichText::new("Search")
                     .size(14.0)
                     .color(ui.visuals().weak_text_color()),
             );
@@ -78,7 +78,7 @@ impl<'a> NewChatView<'a> {
             let text_resp = input_frame.show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut input_text)
-                        .hint_text("Search name or paste npub/hex...")
+                        .hint_text("Search")
                         .desired_width(ui.available_width().min(400.0))
                         .font(egui::TextStyle::Body)
                 )

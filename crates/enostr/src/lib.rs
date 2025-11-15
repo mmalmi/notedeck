@@ -19,6 +19,10 @@ pub use pubkey::{Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
 pub use relay::pool::{PoolEvent, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
+pub use relay::webrtc::{
+    HeartbeatManager, MutualFollowDetector, OnlineStatus, PeerConnection,
+    PeerConnectionManager, SignalingMessage, SignalingType, StunServer, WebRTCRelay,
+};
 pub use relay::{Relay, RelayStatus};
 
 pub type Result<T> = std::result::Result<T, error::Error>;

@@ -32,6 +32,7 @@ mod toolbar;
 pub mod ui;
 mod unknowns;
 mod view_state;
+mod webrtc_coordinator;
 
 #[cfg(test)]
 #[macro_use]

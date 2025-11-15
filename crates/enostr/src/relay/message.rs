@@ -106,7 +106,16 @@ impl<'a> RelayMessage<'a> {
             if let Some(comma_index) = msg[start..].find(',') {
                 let subid_end = start + comma_index;
                 let subid = &msg[start..subid_end].trim().trim_matches('"');
-                return Ok(Self::event(msg, subid));
+
+                // Extract just the event JSON (after the subscription_id and comma)
+                let mut event_start = subid_end + 1;
+                while let Some(&b' ') = msg.as_bytes().get(event_start) {
+                    event_start += 1; // Skip spaces after comma
+                }
+                // Event JSON goes from event_start to the closing bracket (minus 1)
+                let event_json = &msg[event_start..msg.len()-1].trim();
+
+                return Ok(Self::event(event_json, subid));
             } else {
                 return Err(Error::DecodeFailed("Invalid EVENT format".into()));
             }
@@ -183,7 +192,7 @@ mod tests {
             (
                 r#"["EVENT", "random_string", {"id":"example","content":"test"}]"#,
                 Ok(RelayMessage::event(
-                    r#"["EVENT", "random_string", {"id":"example","content":"test"}]"#,
+                    r#"{"id":"example","content":"test"}"#,
                     "random_string",
                 )),
             ),

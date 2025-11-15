@@ -57,38 +57,41 @@ fn test_invite_event_conversion() -> Result<()> {
 
     let invite = Invite::create_new(alice_pk, Some("test-device".to_string()), None)?;
 
-    let event = invite.get_event()?;
+    let unsigned_event = invite.get_event()?;
 
-    assert_eq!(event.kind.as_u16(), INVITE_EVENT_KIND as u16);
-    assert_eq!(event.pubkey.to_bytes(), *alice_pk.bytes());
+    assert_eq!(unsigned_event.kind.as_u16(), INVITE_EVENT_KIND as u16);
+    assert_eq!(unsigned_event.pubkey.to_bytes(), *alice_pk.bytes());
 
-    let has_ephemeral_key = event.tags.iter().any(|t| {
+    let has_ephemeral_key = unsigned_event.tags.iter().any(|t| {
         let v = t.clone().to_vec();
         v.first().map(|s| s.as_str()) == Some("ephemeralKey")
     });
     assert!(has_ephemeral_key);
 
-    let has_shared_secret = event.tags.iter().any(|t| {
+    let has_shared_secret = unsigned_event.tags.iter().any(|t| {
         let v = t.clone().to_vec();
         v.first().map(|s| s.as_str()) == Some("sharedSecret")
     });
     assert!(has_shared_secret);
 
-    let has_d_tag = event.tags.iter().any(|t| {
+    let has_d_tag = unsigned_event.tags.iter().any(|t| {
         let v = t.clone().to_vec();
         v.get(0).map(|s| s.as_str()) == Some("d")
             && v.get(1).map(|s| s.as_str()) == Some("double-ratchet/invites/test-device")
     });
     assert!(has_d_tag);
 
-    let has_l_tag = event.tags.iter().any(|t| {
+    let has_l_tag = unsigned_event.tags.iter().any(|t| {
         let v = t.clone().to_vec();
         v.get(0).map(|s| s.as_str()) == Some("l")
             && v.get(1).map(|s| s.as_str()) == Some("double-ratchet/invites")
     });
     assert!(has_l_tag);
 
-    let parsed_invite = Invite::from_event(&event)?;
+    // Sign the event before parsing
+    let signed_event = unsigned_event.sign_with_keys(&alice_keys)
+        .map_err(|_e| nostr_double_ratchet::Error::Invite("Failed to sign event".to_string()))?;
+    let parsed_invite = Invite::from_event(&signed_event)?;
 
     assert_eq!(parsed_invite.inviter_ephemeral_public_key.bytes(), invite.inviter_ephemeral_public_key.bytes());
     assert_eq!(parsed_invite.shared_secret, invite.shared_secret);
