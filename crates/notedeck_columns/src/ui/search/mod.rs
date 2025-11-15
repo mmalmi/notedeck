@@ -5,13 +5,13 @@ use state::TypingType;
 use crate::{
     nav::BodyResponse,
     timeline::{TimelineTab, TimelineUnits},
-    ui::{timeline::TimelineTabView, widgets::UserRow},
+    ui::timeline::TimelineTabView,
 };
 use egui_winit::clipboard::Clipboard;
 use nostrdb::{Filter, Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural,
-    Images, JobsCache, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
+    fonts::get_font_size, name::get_display_name, profile::get_profile_url, tr, tr_plural, Images,
+    JobsCache, Localization, NoteAction, NoteContext, NoteRef, NotedeckTextStyle,
 };
 
 use notedeck_ui::{
@@ -34,6 +34,7 @@ pub struct SearchView<'a, 'd> {
     txn: &'a Transaction,
     note_context: &'a mut NoteContext<'d>,
     jobs: &'a mut JobsCache,
+    accounts: &'a notedeck::Accounts,
 }
 
 impl<'a, 'd> SearchView<'a, 'd> {
@@ -43,6 +44,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
         query: &'a mut SearchQueryState,
         note_context: &'a mut NoteContext<'d>,
         jobs: &'a mut JobsCache,
+        accounts: &'a notedeck::Accounts,
     ) -> Self {
         Self {
             txn,
@@ -50,14 +52,17 @@ impl<'a, 'd> SearchView<'a, 'd> {
             note_options,
             note_context,
             jobs,
+            accounts,
         }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> BodyResponse<NoteAction> {
-        padding(8.0, ui, |ui| self.show_impl(ui)).inner.map_output(|action| match action {
-            SearchViewAction::NoteAction(note_action) => note_action,
-            SearchViewAction::NavigateToProfile(pubkey) => NoteAction::Profile(pubkey),
-        })
+        padding(8.0, ui, |ui| self.show_impl(ui))
+            .inner
+            .map_output(|action| match action {
+                SearchViewAction::NoteAction(note_action) => note_action,
+                SearchViewAction::NavigateToProfile(pubkey) => NoteAction::Profile(pubkey),
+            })
     }
 
     fn show_impl(&mut self, ui: &mut egui::Ui) -> BodyResponse<SearchViewAction> {
@@ -71,20 +76,25 @@ impl<'a, 'd> SearchView<'a, 'd> {
             self.note_context.clipboard,
         );
 
-        let mut body_resp = BodyResponse::none();
+        search_resp.process(self.query);
 
-        if let Some(action) = search_resp.process(self.query) {
-            body_resp.output = Some(action);
-            return body_resp;
-        }
-
-        let keyboard_resp = handle_keyboard_navigation(ui, &mut self.query.selected_index, &self.query.user_results);
+        let keyboard_resp = handle_keyboard_navigation(
+            ui,
+            &mut self.query.selected_index,
+            &self.query.user_results,
+        );
 
         let mut search_action = None;
+        let mut body_resp = BodyResponse::none();
         match &self.query.state {
-            SearchState::New | SearchState::Navigating | SearchState::Typing(TypingType::Mention(_)) => {
+            SearchState::New
+            | SearchState::Navigating
+            | SearchState::Typing(TypingType::Mention(_)) => {
                 if !self.query.string.is_empty() && !self.query.string.starts_with('@') {
-                    self.query.user_results = self.note_context.ndb.search_profile(self.txn, &self.query.string, 10)
+                    self.query.user_results = self
+                        .note_context
+                        .ndb
+                        .search_profile(self.txn, &self.query.string, 10)
                         .unwrap_or_default()
                         .iter()
                         .map(|&pk| pk.to_vec())
@@ -112,7 +122,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     &mut self.query.notes,
                 );
                 search_action = Some(SearchAction::Searched);
-                body_resp.insert(self.show_search_results(ui).map_output(SearchViewAction::NoteAction));
+                body_resp.insert(
+                    self.show_search_results(ui)
+                        .map_output(SearchViewAction::NoteAction),
+                );
             }
             SearchState::Searched => {
                 ui.label(tr_plural!(
@@ -123,7 +136,10 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     self.query.notes.units.len(),        // count
                     query = &self.query.string
                 ));
-                body_resp.insert(self.show_search_results(ui).map_output(SearchViewAction::NoteAction));
+                body_resp.insert(
+                    self.show_search_results(ui)
+                        .map_output(SearchViewAction::NoteAction),
+                );
             }
         };
 
@@ -136,7 +152,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
         body_resp
     }
 
-    fn handle_mention_search(&mut self, ui: &mut egui::Ui, search_action: &mut Option<SearchAction>) {
+    fn handle_mention_search(
+        &mut self,
+        ui: &mut egui::Ui,
+        search_action: &mut Option<SearchAction>,
+    ) {
         let mention_name = if let Some(mention_text) = self.query.string.get(1..) {
             mention_text
         } else {
@@ -157,7 +177,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
                 self.note_context.ndb,
                 self.txn,
                 &results,
-                self.note_context.accounts,
+                self.accounts,
             )
             .show_in_rect(ui.available_rect_before_wrap(), ui);
 
@@ -190,15 +210,22 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
     }
 
-    fn show_search_suggestions(&mut self, ui: &mut egui::Ui, keyboard_resp: KeyboardResponse) -> Option<SearchAction> {
+    fn show_search_suggestions(
+        &mut self,
+        ui: &mut egui::Ui,
+        keyboard_resp: KeyboardResponse,
+    ) -> Option<SearchAction> {
         ui.add_space(8.0);
 
         let is_selected = self.query.selected_index == 0;
-        let search_posts_clicked = ui.add(search_posts_button(
-            &self.query.string,
-            is_selected,
-            ui.available_width(),
-        )).clicked() || (is_selected && keyboard_resp.enter_pressed);
+        let search_posts_clicked = ui
+            .add(search_posts_button(
+                &self.query.string,
+                is_selected,
+                ui.available_width(),
+            ))
+            .clicked()
+            || (is_selected && keyboard_resp.enter_pressed);
 
         if search_posts_clicked {
             let search_type = SearchType::get_type(&self.query.string);
@@ -212,38 +239,36 @@ impl<'a, 'd> SearchView<'a, 'd> {
             });
         }
 
-        if !self.query.user_results.is_empty() {
-            ui.add_space(8.0);
-
-            // Adjust selected index for dropdown (subtract 1 since "Search posts" is index 0)
-            let _dropdown_index = self.query.selected_index - 1;
-
-            let our_pubkey = self.note_context.accounts.selected_account_pubkey();
-            let _dropdown = crate::ui::profile_search_dropdown::ProfileSearchDropdown::new(
-                self.note_context.ndb,
-                self.note_context.img_cache,
-                our_pubkey,
-                self.note_context.accounts,
-            );
-
-            // Convert user_results to query string format for dropdown
-            // For now, use the existing user_results directly with UserRow
-            for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
-                let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) else {
-                    continue;
-                };
-                let pubkey = Pubkey::new(pk_array);
-                let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, &pk_array).ok();
-
-                let is_selected = self.query.selected_index == (i as i32 + 1);
-                if ui.add(UserRow::new(profile.as_ref(), &pubkey, self.note_context.img_cache, ui.available_width())
-                    .with_accounts(self.note_context.accounts)
-                    .with_selection(is_selected)).clicked() {
-                    return Some(SearchAction::NavigateToProfile(pubkey));
+        if keyboard_resp.enter_pressed && self.query.selected_index > 0 {
+            let user_idx = (self.query.selected_index - 1) as usize;
+            if let Some(pk_bytes) = self.query.user_results.get(user_idx) {
+                if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
+                    return Some(SearchAction::NavigateToProfile(Pubkey::new(pk_array)));
                 }
+            }
+        }
 
-                // Handle enter on selected user
-                if keyboard_resp.enter_pressed && is_selected {
+        for (i, pk_bytes) in self.query.user_results.iter().enumerate() {
+            if let Ok(pk_array) = TryInto::<[u8; 32]>::try_into(pk_bytes.as_slice()) {
+                let pubkey = Pubkey::new(pk_array);
+                let profile = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(self.txn, &pk_array)
+                    .ok();
+                let is_selected = self.query.selected_index == (i + 1) as i32;
+
+                let resp = ui.add(recent_profile_item(
+                    profile.as_ref(),
+                    &pubkey,
+                    &self.query.string,
+                    is_selected,
+                    ui.available_width(),
+                    self.note_context.img_cache,
+                    self.note_context.accounts,
+                ));
+
+                if resp.clicked() {
                     return Some(SearchAction::NavigateToProfile(pubkey));
                 }
             }
@@ -252,7 +277,11 @@ impl<'a, 'd> SearchView<'a, 'd> {
         None
     }
 
-    fn show_recent_searches(&mut self, ui: &mut egui::Ui, keyboard_resp: KeyboardResponse) -> Option<SearchAction> {
+    fn show_recent_searches(
+        &mut self,
+        ui: &mut egui::Ui,
+        keyboard_resp: KeyboardResponse,
+    ) -> Option<SearchAction> {
         if self.query.recent_searches.is_empty() {
             return None;
         }
@@ -288,12 +317,18 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         });
                     }
 
-                    if resp.secondary_clicked() || (is_selected && ui.input(|i| i.key_pressed(Key::Delete))) {
+                    if resp.secondary_clicked()
+                        || (is_selected && ui.input(|i| i.key_pressed(Key::Delete)))
+                    {
                         self.query.remove_recent_search(i);
                     }
                 }
                 RecentSearchItem::Profile { pubkey, query } => {
-                    let profile = self.note_context.ndb.get_profile_by_pubkey(self.txn, pubkey.bytes()).ok();
+                    let profile = self
+                        .note_context
+                        .ndb
+                        .get_profile_by_pubkey(self.txn, pubkey.bytes())
+                        .ok();
                     let resp = ui.add(recent_profile_item(
                         profile.as_ref(),
                         pubkey,
@@ -302,15 +337,15 @@ impl<'a, 'd> SearchView<'a, 'd> {
                         ui.available_width(),
                         self.note_context.img_cache,
                         self.note_context.accounts,
-                        self.note_context.ndb,
-                        self.txn,
                     ));
 
                     if resp.clicked() || (is_selected && keyboard_resp.enter_pressed) {
                         return Some(SearchAction::NavigateToProfile(*pubkey));
                     }
 
-                    if resp.secondary_clicked() || (is_selected && ui.input(|i| i.key_pressed(Key::Delete))) {
+                    if resp.secondary_clicked()
+                        || (is_selected && ui.input(|i| i.key_pressed(Key::Delete)))
+                    {
                         self.query.remove_recent_search(i);
                     }
                 }
@@ -420,7 +455,7 @@ struct SearchResponse {
 }
 
 impl SearchResponse {
-    fn process(self, state: &mut SearchQueryState) -> Option<SearchViewAction> {
+    fn process(self, state: &mut SearchQueryState) {
         if self.requested_focus {
             state.focus_state = FocusState::RequestedFocus;
         } else if state.focus_state == FocusState::RequestedFocus && !self.input_changed {
@@ -428,16 +463,6 @@ impl SearchResponse {
         }
 
         if self.input_changed {
-            // Check if input is a valid npub and auto-navigate
-            if state.string.len() == 63 && state.string.starts_with("npub1") {
-                if let Ok(pk) = Pubkey::try_from_bech32_string(&state.string, false) {
-                    state.add_recent_profile(pk, state.string.clone());
-                    state.string.clear();
-                    state.selected_index = -1;
-                    return Some(SearchViewAction::NavigateToProfile(pk));
-                }
-            }
-
             if state.string.starts_with('@') {
                 state.selected_index = -1;
                 if let Some(mention_text) = state.string.get(1..) {
@@ -452,8 +477,6 @@ impl SearchResponse {
                 state.selected_index = -1;
             }
         }
-
-        None
     }
 }
 
@@ -461,7 +484,11 @@ struct KeyboardResponse {
     enter_pressed: bool,
 }
 
-fn handle_keyboard_navigation(ui: &mut egui::Ui, selected_index: &mut i32, user_results: &[Vec<u8>]) -> KeyboardResponse {
+fn handle_keyboard_navigation(
+    ui: &mut egui::Ui,
+    selected_index: &mut i32,
+    user_results: &[Vec<u8>],
+) -> KeyboardResponse {
     let max_index = if user_results.is_empty() {
         -1
     } else {
@@ -536,10 +563,11 @@ fn search_box(
                             .frame(false),
                     );
 
-                    if response.has_focus() {
-                        if ui.input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown)) {
-                            response.surrender_focus();
-                        }
+                    if response.has_focus()
+                        && ui
+                            .input(|i| i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::ArrowDown))
+                    {
+                        response.surrender_focus();
                     }
 
                     input_context(ui, &response, clipboard, input, PasteBehavior::Append);
@@ -685,14 +713,12 @@ fn search_hashtag(
 
 fn recent_profile_item<'a>(
     profile: Option<&'a ProfileRecord<'_>>,
-    pubkey: &'a Pubkey,
+    _pubkey: &'a Pubkey,
     _query: &'a str,
     is_selected: bool,
     width: f32,
     cache: &'a mut Images,
-    accounts: &'a notedeck::Accounts,
-    ndb: &'a nostrdb::Ndb,
-    txn: &'a nostrdb::Transaction,
+    _accounts: &'a notedeck::Accounts,
 ) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
@@ -700,39 +726,27 @@ fn recent_profile_item<'a>(
         let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
         let x_button_size = 32.0;
 
-        let (rect, resp) = ui.allocate_exact_size(
-            vec2(width, min_img_size + 8.0),
-            egui::Sense::click()
-        );
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(width, min_img_size + 8.0), egui::Sense::click());
 
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         if is_selected {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().selection.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
         }
 
         if resp.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().widgets.hovered.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
         }
 
-        let pfp_rect = egui::Rect::from_min_size(
-            rect.min + vec2(4.0, 4.0),
-            vec2(min_img_size, min_img_size)
-        );
+        let pfp_rect =
+            egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(min_img_size, min_img_size));
 
         ui.put(
             pfp_rect,
-            &mut ProfilePic::new(cache, get_profile_url(profile))
-                .size(min_img_size)
-                .with_follow_check(pubkey, accounts, ndb, txn),
+            &mut ProfilePic::new(cache, get_profile_url(profile)).size(min_img_size),
         );
 
         let name = get_display_name(profile).name();
@@ -747,14 +761,14 @@ fn recent_profile_item<'a>(
 
         let galley_pos = egui::Pos2::new(
             pfp_rect.right() + spacing,
-            rect.center().y - (text_galley.rect.height() / 2.0)
+            rect.center().y - (text_galley.rect.height() / 2.0),
         );
 
         painter.galley(galley_pos, text_galley, ui.visuals().text_color());
 
         let x_rect = egui::Rect::from_min_size(
             egui::Pos2::new(rect.right() - x_button_size, rect.top()),
-            vec2(x_button_size, rect.height())
+            vec2(x_button_size, rect.height()),
         );
 
         let x_center = x_rect.center();
@@ -778,38 +792,33 @@ fn recent_profile_item<'a>(
     }
 }
 
-fn recent_search_item(query: &str, is_selected: bool, width: f32, _is_profile: bool) -> impl egui::Widget + '_ {
+fn recent_search_item(
+    query: &str,
+    is_selected: bool,
+    width: f32,
+    _is_profile: bool,
+) -> impl egui::Widget + '_ {
     move |ui: &mut egui::Ui| -> egui::Response {
         let min_img_size = 48.0;
         let spacing = 8.0;
         let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
         let x_button_size = 32.0;
 
-        let (rect, resp) = ui.allocate_exact_size(
-            vec2(width, min_img_size + 8.0),
-            egui::Sense::click()
-        );
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(width, min_img_size + 8.0), egui::Sense::click());
 
         if is_selected {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().selection.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
         }
 
         if resp.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().widgets.hovered.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
         }
 
-        let icon_rect = egui::Rect::from_min_size(
-            rect.min + vec2(4.0, 4.0),
-            vec2(min_img_size, min_img_size)
-        );
+        let icon_rect =
+            egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(min_img_size, min_img_size));
 
         ui.put(icon_rect, search_icon(min_img_size / 2.0, min_img_size));
 
@@ -824,14 +833,14 @@ fn recent_search_item(query: &str, is_selected: bool, width: f32, _is_profile: b
 
         let galley_pos = egui::Pos2::new(
             icon_rect.right() + spacing,
-            rect.center().y - (text_galley.rect.height() / 2.0)
+            rect.center().y - (text_galley.rect.height() / 2.0),
         );
 
         painter.galley(galley_pos, text_galley, ui.visuals().text_color());
 
         let x_rect = egui::Rect::from_min_size(
             egui::Pos2::new(rect.right() - x_button_size, rect.top()),
-            vec2(x_button_size, rect.height())
+            vec2(x_button_size, rect.height()),
         );
 
         let x_center = x_rect.center();
@@ -861,31 +870,21 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
         let spacing = 8.0;
         let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
 
-        let (rect, resp) = ui.allocate_exact_size(
-            vec2(width, min_img_size + 8.0),
-            egui::Sense::click()
-        );
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(width, min_img_size + 8.0), egui::Sense::click());
 
         if is_selected {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().selection.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().selection.bg_fill);
         }
 
         if resp.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                ui.visuals().widgets.hovered.bg_fill,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().widgets.hovered.bg_fill);
         }
 
-        let icon_rect = egui::Rect::from_min_size(
-            rect.min + vec2(4.0, 4.0),
-            vec2(min_img_size, min_img_size)
-        );
+        let icon_rect =
+            egui::Rect::from_min_size(rect.min + vec2(4.0, 4.0), vec2(min_img_size, min_img_size));
 
         ui.put(icon_rect, search_icon(min_img_size / 2.0, min_img_size));
 
@@ -901,7 +900,7 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
 
         let galley_pos = egui::Pos2::new(
             icon_rect.right() + spacing,
-            rect.center().y - (text_galley.rect.height() / 2.0)
+            rect.center().y - (text_galley.rect.height() / 2.0),
         );
 
         painter.galley(galley_pos, text_galley, ui.visuals().text_color());
@@ -909,4 +908,3 @@ fn search_posts_button(query: &str, is_selected: bool, width: f32) -> impl egui:
         resp
     }
 }
-

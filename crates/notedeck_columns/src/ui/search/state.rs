@@ -26,13 +26,13 @@ pub enum RecentSearchItem {
 #[derive(Debug, Eq, PartialEq, Clone, Default)]
 pub enum FocusState {
     /// Get ready to focus
+    #[default]
     Navigating,
 
     /// We should request focus when we stop navigating
     ShouldRequestFocus,
 
     /// We already focused, we don't need to do that again
-    #[default]
     RequestedFocus,
 }
 
@@ -87,7 +87,8 @@ impl SearchQueryState {
         }
 
         let item = RecentSearchItem::Query(query.clone());
-        self.recent_searches.retain(|s| !matches!(s, RecentSearchItem::Query(q) if q == &query));
+        self.recent_searches
+            .retain(|s| !matches!(s, RecentSearchItem::Query(q) if q == &query));
         self.recent_searches.insert(0, item);
         self.recent_searches.truncate(10);
     }
@@ -97,10 +98,13 @@ impl SearchQueryState {
             return;
         }
 
-        let item = RecentSearchItem::Profile { pubkey, query: query.clone() };
-        self.recent_searches.retain(|s| {
-            !matches!(s, RecentSearchItem::Profile { pubkey: pk, .. } if pk == &pubkey)
-        });
+        let item = RecentSearchItem::Profile {
+            pubkey,
+            query: query.clone(),
+        };
+        self.recent_searches.retain(
+            |s| !matches!(s, RecentSearchItem::Profile { pubkey: pk, .. } if pk == &pubkey),
+        );
         self.recent_searches.insert(0, item);
         self.recent_searches.truncate(10);
     }

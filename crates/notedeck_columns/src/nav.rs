@@ -874,6 +874,7 @@ fn render_nav_body(
                 search_buffer,
                 &mut note_context,
                 &mut app.jobs,
+                ctx.accounts,
             )
             .show(ui)
             .map_output(RenderNavAction::NoteAction)

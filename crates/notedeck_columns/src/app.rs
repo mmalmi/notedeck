@@ -93,7 +93,11 @@ pub struct Damus {
     webrtc_coordinator: crate::webrtc_coordinator::WebRTCCoordinator,
 }
 
-fn handle_egui_events(input: &egui::InputState, columns: &mut Columns, hovered_column: Option<usize>) {
+fn handle_egui_events(
+    input: &egui::InputState,
+    columns: &mut Columns,
+    hovered_column: Option<usize>,
+) {
     for event in &input.raw.events {
         match event {
             egui::Event::Key { key, pressed, .. } if *pressed => match key {
