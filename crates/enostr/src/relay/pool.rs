@@ -14,6 +14,20 @@ use tracing::{debug, error, trace};
 
 use super::subs_debug::SubsDebug;
 
+/// Check if a filter is suitable for negentropy sync
+fn should_use_negentropy(filter: &Filter) -> bool {
+    // Check if has ids filter (only called once per subscription, minimal overhead)
+    if let Ok(json) = filter.json() {
+        if json.contains("\"ids\"") {
+            return false;
+        }
+    }
+
+    // Use negentropy if no limit or limit >= 20
+    // Small limits are faster with traditional REQ
+    filter.limit().map_or(true, |limit| limit >= 20)
+}
+
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
     pub relay: &'a str,
@@ -334,13 +348,19 @@ impl RelayPool {
             let use_neg = try_negentropy && matches!(relay, PoolRelay::Websocket(_));
 
             let msg = if use_neg && !filter.is_empty() {
-                // Use negentropy for single-filter subscriptions
-                // Multi-filter subscriptions fall back to REQ
-                if filter.len() == 1 {
+                // Check if suitable for negentropy:
+                // - Single filter only
+                // - No ids filter (negentropy is for discovery, not fetching specific events)
+                // - No limit or limit >= 20 (small limits are faster with REQ)
+                if filter.len() == 1 && should_use_negentropy(&filter[0]) {
                     debug!("using negentropy for subscription {} on {}", subid, relay_url);
                     ClientMessage::neg_open(subid.clone(), filter[0].clone(), None)
                 } else {
-                    debug!("falling back to REQ for multi-filter subscription {} on {}", subid, relay_url);
+                    if filter.len() > 1 {
+                        debug!("falling back to REQ for multi-filter subscription {} on {}", subid, relay_url);
+                    } else if !filter.is_empty() {
+                        debug!("falling back to REQ for subscription {} (ids filter or small limit) on {}", subid, relay_url);
+                    }
                     ClientMessage::req(subid.clone(), filter.clone())
                 }
             } else {

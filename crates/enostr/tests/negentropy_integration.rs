@@ -126,3 +126,28 @@ fn test_subscribe_with_negentropy_explicit() {
 
     // Both should work without errors
 }
+
+#[test]
+fn test_negentropy_filter_rules() {
+    use nostrdb::FilterBuilder;
+
+    // Should use negentropy: no limit
+    let f1 = FilterBuilder::new().kinds(vec![1]).build();
+    let json1 = f1.json().unwrap();
+    assert!(!json1.contains("\"ids\""));
+    assert!(f1.limit().is_none());
+
+    // Should use negentropy: limit >= 20
+    let f2 = FilterBuilder::new().kinds(vec![1]).limit(100).build();
+    assert_eq!(f2.limit(), Some(100));
+
+    // Should NOT use negentropy: limit < 20
+    let f3 = FilterBuilder::new().kinds(vec![1]).limit(10).build();
+    assert_eq!(f3.limit(), Some(10));
+
+    // Should NOT use negentropy: has ids
+    let id_bytes = [0u8; 32];
+    let f4 = FilterBuilder::new().ids(vec![&id_bytes]).build();
+    let json4 = f4.json().unwrap();
+    assert!(json4.contains("\"ids\""));
+}
