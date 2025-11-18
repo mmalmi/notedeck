@@ -23,6 +23,8 @@ tokenator = { workspace = true }
 hashbrown = { workspace = true }
 bytes = "1.10"
 uuid = { workspace = true }
+negentropy = "0.5.0"
+sha2 = { workspace = true }
 
 # WebRTC dependencies
 webrtc = { workspace = true }

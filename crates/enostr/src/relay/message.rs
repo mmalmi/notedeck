@@ -18,6 +18,8 @@ pub enum RelayMessage<'a> {
     Eose(&'a str),
     Event(&'a str, &'a str),
     Notice(&'a str),
+    NegMsg(&'a str, &'a [u8]), // sub_id, payload
+    NegErr(&'a str, &'a str),  // sub_id, error
 }
 
 #[derive(Debug)]
@@ -47,6 +49,13 @@ impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
                 Ok(msg) => msg,
                 Err(err) => RelayEvent::Error(err),
             },
+            WsMessage::Binary(_data) => {
+                // NEG-MSG (NIP-77) - binary negentropy message
+                // We'll handle parsing the subscription ID from binary data
+                // For now, we'll store the full binary payload
+                // The pool will need to match it to the active negentropy subscription
+                RelayEvent::Other(wsmsg)
+            }
             wsmsg => RelayEvent::Other(wsmsg),
         }
     }
@@ -81,6 +90,25 @@ impl<'a> RelayMessage<'a> {
         // make sure we can inspect the begning of the message below ...
         if msg.len() < 12 {
             return Err(Error::DecodeFailed("message too short".into()));
+        }
+
+        // NEG-ERR (NIP-77)
+        // Relay response format: ["NEG-ERR", <subscription_id>, <error>]
+        if msg.len() >= 12 && &msg[0..=10] == "[\"NEG-ERR\"," {
+            let mut start = 12;
+            while let Some(&b' ') = msg.as_bytes().get(start) {
+                start += 1;
+            }
+            if let Some(comma_index) = msg[start..].find(',') {
+                let subid_end = start + comma_index;
+                let subid = &msg[start..subid_end].trim().trim_matches('"');
+                let mut err_start = subid_end + 1;
+                while let Some(&b' ') = msg.as_bytes().get(err_start) {
+                    err_start += 1;
+                }
+                let err_msg = &msg[err_start..msg.len()-2].trim().trim_matches('"');
+                return Ok(RelayMessage::NegErr(subid, err_msg));
+            }
         }
 
         // Notice

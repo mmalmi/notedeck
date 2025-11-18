@@ -24,6 +24,18 @@ pub enum ClientMessage {
     Close {
         sub_id: String,
     },
+    NegOpen {
+        sub_id: String,
+        filter: Filter,
+        id_size: Option<u32>,
+    },
+    NegClose {
+        sub_id: String,
+    },
+    NegMsg {
+        sub_id: String,
+        message: Vec<u8>,
+    },
     Raw(String),
 }
 
@@ -46,6 +58,18 @@ impl ClientMessage {
         ClientMessage::Close { sub_id }
     }
 
+    pub fn neg_open(sub_id: String, filter: Filter, id_size: Option<u32>) -> Self {
+        ClientMessage::NegOpen { sub_id, filter, id_size }
+    }
+
+    pub fn neg_close(sub_id: String) -> Self {
+        ClientMessage::NegClose { sub_id }
+    }
+
+    pub fn neg_msg(sub_id: String, message: Vec<u8>) -> Self {
+        ClientMessage::NegMsg { sub_id, message }
+    }
+
     pub fn to_json(&self) -> Result<String, Error> {
         Ok(match self {
             Self::Event(ecm) => ecm.to_json(),
@@ -65,6 +89,19 @@ impl ClientMessage {
                 }
             }
             Self::Close { sub_id } => json!(["CLOSE", sub_id]).to_string(),
+            Self::NegOpen { sub_id, filter, id_size } => {
+                let filter_json = filter.json()?;
+                if let Some(size) = id_size {
+                    json!(["NEG-OPEN", sub_id, filter_json, {"id_size": size}]).to_string()
+                } else {
+                    json!(["NEG-OPEN", sub_id, filter_json]).to_string()
+                }
+            }
+            Self::NegClose { sub_id } => json!(["NEG-CLOSE", sub_id]).to_string(),
+            Self::NegMsg { .. } => {
+                // NEG-MSG is sent as binary, not JSON
+                return Err(Error::Generic("NEG-MSG must be sent as binary".to_string()));
+            }
         })
     }
 }

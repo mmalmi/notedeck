@@ -12,6 +12,7 @@ use std::net::Ipv4Addr;
 use tracing::{debug, error};
 
 pub mod message;
+pub mod negentropy;
 pub mod pool;
 pub mod subs_debug;
 pub mod webrtc;
@@ -195,19 +196,27 @@ impl Relay {
     }
 
     pub fn send(&mut self, msg: &ClientMessage) {
-        let json = match msg.to_json() {
-            Ok(json) => {
-                debug!("sending {} to {}", json, self.url);
-                json
+        match msg {
+            ClientMessage::NegMsg { sub_id, message } => {
+                debug!("sending negentropy binary message ({} bytes) for sub {} to {}", message.len(), sub_id, self.url);
+                self.sender.send(WsMessage::Binary(message.clone()));
             }
-            Err(e) => {
-                error!("error serializing json for filter: {e}");
-                return;
-            }
-        };
+            _ => {
+                let json = match msg.to_json() {
+                    Ok(json) => {
+                        debug!("sending {} to {}", json, self.url);
+                        json
+                    }
+                    Err(e) => {
+                        error!("error serializing json for filter: {e}");
+                        return;
+                    }
+                };
 
-        let txt = WsMessage::Text(json);
-        self.sender.send(txt);
+                let txt = WsMessage::Text(json);
+                self.sender.send(txt);
+            }
+        }
     }
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {

@@ -1,6 +1,7 @@
 mod client;
 mod error;
 mod filter;
+mod filter_hash;
 mod keypair;
 mod note;
 mod profile;
@@ -11,12 +12,14 @@ pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;
 pub use ewebsock;
 pub use filter::Filter;
+pub use filter_hash::{hash_filter, hash_filters, sha256_filter};
 pub use keypair::{FilledKeypair, FullKeypair, Keypair, KeypairUnowned, SerializableKeypair};
 pub use nostr::SecretKey;
 pub use note::{Note, NoteId};
 pub use profile::ProfileState;
 pub use pubkey::{Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
+pub use relay::negentropy::{NegentropyManager, NegentropySync};
 pub use relay::pool::{PoolEvent, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
 pub use relay::webrtc::{

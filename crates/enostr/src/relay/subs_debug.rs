@@ -60,6 +60,8 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
                     RelayMessage::Eose(s) => format!("EOSE:{s}"),
                     RelayMessage::Event(_, s) => format!("EVENT:{s}"),
                     RelayMessage::Notice(s) => format!("NOTICE:{s}"),
+                    RelayMessage::NegMsg(s, _) => format!("NEG-MSG:{s}"),
+                    RelayMessage::NegErr(s, e) => format!("NEG-ERR:{s}:{e}"),
                 };
                 OwnedRelayEvent::Message(relay_msg)
             }
@@ -194,6 +196,15 @@ fn calculate_client_message_size(message: &ClientMessage) -> usize {
         ClientMessage::Close { sub_id } => {
             mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.len()
         }
+        ClientMessage::NegOpen { sub_id, filter, .. } => {
+            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.len() + mem::size_of_val(filter)
+        }
+        ClientMessage::NegClose { sub_id } => {
+            mem::size_of_val(message) + mem::size_of_val(sub_id) + sub_id.len()
+        }
+        ClientMessage::NegMsg { sub_id, message } => {
+            mem::size_of_val(sub_id) + sub_id.len() + message.len()
+        }
         ClientMessage::Raw(data) => mem::size_of_val(message) + data.len(),
     }
 }
@@ -249,6 +260,8 @@ fn calculate_relay_message_size(message: &RelayMessage) -> usize {
         RelayMessage::Eose(str_ref)
         | RelayMessage::Event(str_ref, _)
         | RelayMessage::Notice(str_ref) => mem::size_of_val(message) + str_ref.len(),
+        RelayMessage::NegMsg(str_ref, data) => mem::size_of_val(message) + str_ref.len() + data.len(),
+        RelayMessage::NegErr(sub_id, err) => mem::size_of_val(message) + sub_id.len() + err.len(),
     }
 }
 

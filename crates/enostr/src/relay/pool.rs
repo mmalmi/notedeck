@@ -1,9 +1,10 @@
 use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
 use crate::relay::webrtc::WebRTCRelay;
+use crate::relay::negentropy::NegentropyManager;
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use url::Url;
@@ -142,6 +143,9 @@ pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
     pub debug: Option<SubsDebug>,
+    #[allow(dead_code)] // Will be used for handling NEG-MSG responses
+    negentropy_managers: HashMap<String, NegentropyManager>, // relay_url -> manager
+    use_negentropy: bool,
 }
 
 impl Default for RelayPool {
@@ -157,6 +161,56 @@ impl RelayPool {
             relays: vec![],
             ping_rate: Duration::from_secs(45),
             debug: None,
+            negentropy_managers: HashMap::new(),
+            use_negentropy: true,
+        }
+    }
+
+    /// Enable or disable negentropy protocol
+    pub fn set_use_negentropy(&mut self, enabled: bool) {
+        self.use_negentropy = enabled;
+    }
+
+    /// Check if negentropy is enabled
+    pub fn using_negentropy(&self) -> bool {
+        self.use_negentropy
+    }
+
+    /// Get or create negentropy manager for a relay
+    fn get_neg_manager(&mut self, relay_url: &str) -> &mut NegentropyManager {
+        self.negentropy_managers
+            .entry(relay_url.to_owned())
+            .or_insert_with(NegentropyManager::new)
+    }
+
+    /// Start negentropy sync for a subscription on a relay
+    pub fn start_negentropy_sync(&mut self, relay_url: &str, sub_id: &str, filter_hash: u64) -> Result<()> {
+        let manager = self.get_neg_manager(relay_url);
+        manager.start_sync(sub_id.to_string(), filter_hash)
+    }
+
+    /// Close negentropy sync for a subscription on a relay
+    pub fn close_negentropy_sync(&mut self, relay_url: &str, sub_id: &str) {
+        if let Some(manager) = self.negentropy_managers.get_mut(relay_url) {
+            manager.close_sync(sub_id);
+        }
+    }
+
+    /// Process binary NEG-MSG response
+    pub fn handle_negentropy_message(
+        &mut self,
+        relay_url: &str,
+        sub_id: &str,
+        msg: &[u8],
+    ) -> Result<(Option<Vec<u8>>, Vec<String>, Vec<String>)> {
+        let manager = self.get_neg_manager(relay_url);
+        manager.reconcile(sub_id, msg)
+    }
+
+    /// Cleanup stale negentropy sessions across all relays
+    pub fn cleanup_stale_negentropy(&mut self) {
+        for manager in self.negentropy_managers.values_mut() {
+            manager.cleanup_stale();
         }
     }
 
@@ -268,16 +322,37 @@ impl RelayPool {
     }
 
     pub fn subscribe(&mut self, subid: String, filter: Vec<Filter>) {
+        self.subscribe_with_negentropy(subid, filter, self.use_negentropy);
+    }
+
+    /// Subscribe with explicit negentropy control
+    pub fn subscribe_with_negentropy(&mut self, subid: String, filter: Vec<Filter>, try_negentropy: bool) {
         for relay in &mut self.relays {
+            let relay_url = relay.url().to_owned();
+
+            // Try negentropy if enabled and this is a websocket relay
+            let use_neg = try_negentropy && matches!(relay, PoolRelay::Websocket(_));
+
+            let msg = if use_neg && !filter.is_empty() {
+                // Use negentropy for single-filter subscriptions
+                // Multi-filter subscriptions fall back to REQ
+                if filter.len() == 1 {
+                    debug!("using negentropy for subscription {} on {}", subid, relay_url);
+                    ClientMessage::neg_open(subid.clone(), filter[0].clone(), None)
+                } else {
+                    debug!("falling back to REQ for multi-filter subscription {} on {}", subid, relay_url);
+                    ClientMessage::req(subid.clone(), filter.clone())
+                }
+            } else {
+                ClientMessage::req(subid.clone(), filter.clone())
+            };
+
             if let Some(debug) = &mut self.debug {
-                debug.send_cmd(
-                    relay.url().to_owned(),
-                    &ClientMessage::req(subid.clone(), filter.clone()),
-                );
+                debug.send_cmd(relay_url.clone(), &msg);
             }
 
-            if let Err(err) = relay.send(&ClientMessage::req(subid.clone(), filter.clone())) {
-                error!("error subscribing to {}: {err}", relay.url());
+            if let Err(err) = relay.send(&msg) {
+                error!("error subscribing to {}: {err}", relay_url);
             }
         }
     }
@@ -441,8 +516,7 @@ impl RelayPool {
                         relay.set_status(RelayStatus::Disconnected);
                     }
                     WsEvent::Message(ev) => {
-                        // let's just handle pongs here.
-                        // We only need to do this natively.
+                        // Handle pings
                         #[cfg(not(target_arch = "wasm32"))]
                         if let WsMessage::Ping(ref bs) = ev {
                             trace!("pong {}", relay.url());
@@ -452,6 +526,18 @@ impl RelayPool {
                                 }
                                 PoolRelay::Multicast(_mcr) => {}
                                 PoolRelay::WebRTC(_) => {}
+                            }
+                        }
+
+                        // Handle binary negentropy messages
+                        if let WsMessage::Binary(ref data) = ev {
+                            if self.use_negentropy {
+                                debug!("received binary NEG-MSG ({} bytes) from {}", data.len(), relay.url());
+                                // Binary NEG-MSG responses are passed through to the application
+                                // The application layer will need to:
+                                // 1. Match this to the active subscription
+                                // 2. Call negentropy_manager.reconcile()
+                                // 3. Send next NEG-MSG or fetch missing events
                             }
                         }
                     }
