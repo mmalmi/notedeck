@@ -6,7 +6,7 @@ use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichTex
 use enostr::{MutualFollowDetector, RelayPool, RelayStatus, Pubkey};
 use notedeck::{tr, Localization, NotedeckTextStyle, RelayAction, Images, Accounts};
 use notedeck_ui::app_images;
-use notedeck_ui::{colors::PINK, padding, ProfilePic};
+use notedeck_ui::{colors::PINK, padding, ProfilePic, segmented_button};
 use nostrdb::{Filter, Ndb, Transaction};
 use tracing::debug;
 
@@ -19,6 +19,7 @@ pub struct RelayView<'a> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     accounts: &'a Accounts,
+    use_webrtc: bool,
 }
 
 impl RelayView<'_> {
@@ -58,8 +59,42 @@ impl RelayView<'_> {
                         // Separator
                         ui.add_space(24.0);
 
-                        // Show WebRTC peers section with its own heading
-                        self.show_webrtc_section(ui);
+                        // WebRTC section heading
+                        ui.horizontal(|ui| {
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new("WebRTC Peers")
+                                        .text_style(NotedeckTextStyle::Heading2.text_style()),
+                                );
+                            });
+                        });
+
+                        ui.add_space(8.0);
+
+                        // WebRTC toggle
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Direct connect with mutual follows over WebRTC")
+                                    .text_style(NotedeckTextStyle::Body.text_style()),
+                            );
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.add(segmented_button("Off", !self.use_webrtc, ui)).clicked() {
+                                    action = Some(RelayAction::SetUseWebRTC(false));
+                                }
+
+                                ui.add_space(4.0);
+
+                                if ui.add(segmented_button("On", self.use_webrtc, ui)).clicked() {
+                                    action = Some(RelayAction::SetUseWebRTC(true));
+                                }
+                            });
+                        });
+
+                        ui.add_space(16.0);
+
+                        // Show WebRTC peers list
+                        self.show_webrtc_peers(ui);
 
                         action
                     })
@@ -82,6 +117,7 @@ impl<'a> RelayView<'a> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         accounts: &'a Accounts,
+        use_webrtc: bool,
     ) -> Self {
         RelayView {
             pool,
@@ -90,6 +126,7 @@ impl<'a> RelayView<'a> {
             ndb,
             img_cache,
             accounts,
+            use_webrtc,
         }
     }
 
@@ -97,20 +134,9 @@ impl<'a> RelayView<'a> {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
-    /// Show WebRTC peers section
-    fn show_webrtc_section(&mut self, ui: &mut Ui) {
+    /// Show WebRTC peers list
+    fn show_webrtc_peers(&mut self, ui: &mut Ui) {
         let peer_count = self.pool.webrtc_peer_count();
-
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.label(
-                    RichText::new("WebRTC Peers")
-                        .text_style(NotedeckTextStyle::Heading2.text_style()),
-                );
-            });
-        });
-
-        ui.add_space(8.0);
 
         if peer_count == 0 {
             relay_frame(ui).show(ui, |ui| {
@@ -586,6 +612,7 @@ mod preview {
                 app.ndb,
                 app.img_cache,
                 app.accounts,
+                false,
             )
             .ui(ui);
             AppResponse::none()

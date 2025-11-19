@@ -631,8 +631,8 @@ impl Notedeck {
             }
         }
 
-        // Add WebRTC relay for peer-to-peer connections
-        {
+        // Add WebRTC relay for peer-to-peer connections (if enabled in settings)
+        if settings.use_webrtc() {
             if let Ok(webrtc_relay) = enostr::PoolRelay::webrtc(true) {
                 // Clone the relay before pushing to pool for async start
                 let relay_to_start = if let enostr::PoolRelay::WebRTC(ref relay) = webrtc_relay {

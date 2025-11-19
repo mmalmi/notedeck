@@ -112,6 +112,7 @@ pub enum SettingsAction {
     SetMaxMediaDistance(u32),
     SetMaxHashtagsPerNote(usize),
     SetUseNegentropy(bool),
+    SetUseWebRTC(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -190,6 +191,10 @@ impl SettingsAction {
             Self::SetUseNegentropy(value) => {
                 settings.set_use_negentropy(value);
                 pool.set_use_negentropy(value);
+            }
+
+            Self::SetUseWebRTC(value) => {
+                settings.set_use_webrtc(value);
             }
 
             Self::RecrawlSocialGraph(max_distance) => {
@@ -1113,8 +1118,8 @@ impl<'a> SettingsView<'a> {
                     // Draw label
                     let label = tr!(
                         self.note_context.i18n,
-                        "Configure relays",
-                        "Label for configure relays, settings section",
+                        "Network",
+                        "Label for network settings section",
                     );
                     let galley = ui.painter().layout_no_wrap(
                         label,

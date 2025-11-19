@@ -213,13 +213,15 @@ pub(super) fn update_relay_configuration(
 pub enum RelayAction {
     Add(String),
     Remove(String),
+    SetUseWebRTC(bool),
 }
 
 impl RelayAction {
-    pub(super) fn get_url(&self) -> &str {
+    pub(super) fn get_url(&self) -> Option<&str> {
         match self {
-            RelayAction::Add(url) => url,
-            RelayAction::Remove(url) => url,
+            RelayAction::Add(url) => Some(url),
+            RelayAction::Remove(url) => Some(url),
+            RelayAction::SetUseWebRTC(_) => None,
         }
     }
 }
@@ -231,10 +233,16 @@ pub(super) fn modify_advertised_relays(
     relay_defaults: &RelayDefaults,
     account_data: &mut AccountData,
 ) {
-    let relay_url = AccountRelayData::canonicalize_url(action.get_url());
+    // SetUseWebRTC is handled elsewhere, not in relay list modifications
+    if matches!(action, RelayAction::SetUseWebRTC(_)) {
+        return;
+    }
+
+    let relay_url = AccountRelayData::canonicalize_url(action.get_url().expect("Action must have URL"));
     match action {
         RelayAction::Add(_) => info!("add advertised relay \"{}\"", relay_url),
         RelayAction::Remove(_) => info!("remove advertised relay \"{}\"", relay_url),
+        RelayAction::SetUseWebRTC(_) => unreachable!(),
     }
 
     // let selected = self.cache.selected_mut();
@@ -252,6 +260,7 @@ pub(super) fn modify_advertised_relays(
         RelayAction::Remove(_) => {
             advertised.remove(&RelaySpec::new(relay_url, false, false));
         }
+        RelayAction::SetUseWebRTC(_) => unreachable!(),
     }
 
     // If we have the secret key publish the NIP-65 relay list

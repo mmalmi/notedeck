@@ -16,6 +16,7 @@ const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
 const DEFAULT_MAX_MEDIA_DISTANCE: u32 = 3;
 const DEFAULT_USE_NEGENTROPY: bool = false;
+const DEFAULT_USE_WEBRTC: bool = false;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -46,6 +47,8 @@ pub struct Settings {
     pub max_hashtags_per_note: usize,
     #[serde(default = "default_use_negentropy")]
     pub use_negentropy: bool,
+    #[serde(default = "default_use_webrtc")]
+    pub use_webrtc: bool,
 }
 
 fn default_max_media_distance() -> u32 {
@@ -58,6 +61,10 @@ fn default_animate_nav_transitions() -> bool {
 
 fn default_use_negentropy() -> bool {
     DEFAULT_USE_NEGENTROPY
+}
+
+fn default_use_webrtc() -> bool {
+    DEFAULT_USE_WEBRTC
 }
 
 impl Default for Settings {
@@ -73,6 +80,7 @@ impl Default for Settings {
             max_media_distance: DEFAULT_MAX_MEDIA_DISTANCE,
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
             use_negentropy: DEFAULT_USE_NEGENTROPY,
+            use_webrtc: DEFAULT_USE_WEBRTC,
         }
     }
 }
@@ -237,6 +245,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_use_webrtc(&mut self, value: bool) {
+        self.get_settings_mut().use_webrtc = value;
+        self.try_save_settings();
+    }
+
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),
@@ -316,5 +329,12 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.use_negentropy)
             .unwrap_or(DEFAULT_USE_NEGENTROPY)
+    }
+
+    pub fn use_webrtc(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.use_webrtc)
+            .unwrap_or(DEFAULT_USE_WEBRTC)
     }
 }

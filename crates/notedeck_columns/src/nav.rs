@@ -570,8 +570,15 @@ fn process_render_nav_action(
             wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
         RenderNavAction::RelayAction(action) => {
-            ctx.accounts
-                .process_relay_action(ui.ctx(), ctx.pool, action);
+            match action {
+                RelayAction::SetUseWebRTC(value) => {
+                    ctx.settings.set_use_webrtc(value);
+                }
+                _ => {
+                    ctx.accounts
+                        .process_relay_action(ui.ctx(), ctx.pool, action);
+                }
+            }
             None
         }
         RenderNavAction::SettingsAction(action) => {
@@ -713,6 +720,7 @@ fn render_nav_body(
             ctx.ndb,
             ctx.img_cache,
             ctx.accounts,
+            ctx.settings.use_webrtc(),
         )
         .ui(ui)
         .map_output(RenderNavAction::RelayAction),
