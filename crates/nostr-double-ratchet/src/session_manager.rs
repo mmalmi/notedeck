@@ -27,6 +27,7 @@ struct InviteState {
 
 struct PendingMessage {
     text: String,
+    #[allow(dead_code)]
     timestamp: u64,
     first_sent_at: Option<u64>,
 }

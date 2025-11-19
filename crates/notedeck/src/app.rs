@@ -959,7 +959,13 @@ impl Notedeck {
                 }
             }
             RelayMessage::Notice(msg) => {
-                tracing::warn!("Notice from {}: {}", relay, msg);
+                let msg_lower = msg.to_lowercase();
+                if msg_lower.contains("neg-") || msg_lower.contains("negentropy") {
+                    tracing::warn!("Notice from {}: {} (relay may not support negentropy)", relay, msg);
+                    self.pool.mark_negentropy_unsupported(relay);
+                } else {
+                    tracing::warn!("Notice from {}: {}", relay, msg);
+                }
             }
             RelayMessage::OK(cr) => {
                 tracing::info!("OK from {}: {:?}", relay, cr);

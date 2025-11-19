@@ -14,6 +14,17 @@ use tracing::{debug, error, trace, warn};
 
 use super::subs_debug::SubsDebug;
 
+/// Tracks relay negentropy protocol support state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegentropySupport {
+    /// Unknown - initial state, not yet determined
+    Unknown,
+    /// Confirmed supported - received NEG-MSG response
+    Supported,
+    /// Confirmed unsupported - received NOTICE/NEG-ERR or timeout
+    Unsupported,
+}
+
 /// Check if a filter is suitable for negentropy sync (matches NDK logic)
 fn should_use_negentropy(filter: &Filter) -> bool {
     // Get filter JSON for inspection
@@ -119,6 +130,7 @@ impl PoolEvent {
 }
 
 // Deprecated, keeping for backwards compat
+#[allow(dead_code)]
 pub type PoolEventBuf = PoolEvent;
 
 pub enum PoolRelay {
@@ -236,9 +248,11 @@ pub struct RelayPool {
     negentropy_events: Vec<NegentropyEvent>,
     /// Track active negentropy subscriptions per relay: relay_url -> sub_id
     active_neg_subs: HashMap<String, String>,
-    /// Track relays that don't support negentropy (received NEG-ERR or unsupported NOTICE)
-    /// These relays will use traditional REQ instead
-    negentropy_unsupported: std::collections::HashSet<String>,
+    /// Track negentropy support state per relay: relay_url -> (support_state, last_attempt_time)
+    /// Unknown: initial state
+    /// Supported: confirmed via NEG-MSG receipt
+    /// Unsupported: confirmed via NOTICE/NEG-ERR or 10s timeout
+    negentropy_support: HashMap<String, (NegentropySupport, Instant)>,
 }
 
 impl Default for RelayPool {
@@ -258,7 +272,7 @@ impl RelayPool {
             use_negentropy: true,
             negentropy_events: Vec::new(),
             active_neg_subs: HashMap::new(),
-            negentropy_unsupported: std::collections::HashSet::new(),
+            negentropy_support: HashMap::new(),
         }
     }
 
@@ -317,6 +331,11 @@ impl RelayPool {
         // Send NEG-OPEN
         if let Some(relay) = self.relays.iter_mut().find(|r| r.url() == relay_url) {
             debug!("sending NEG-OPEN with {} byte init msg ({} events) for sub {} to {}", init_msg.len(), events.len(), sub_id, relay_url);
+
+            // Mark relay as Unknown with timestamp if not already tracked
+            self.negentropy_support.entry(relay_url.to_string())
+                .or_insert((NegentropySupport::Unknown, Instant::now()));
+
             let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter, None, init_msg);
             relay.send(&neg_open)?;
         } else {
@@ -356,15 +375,27 @@ impl RelayPool {
     /// Future subscriptions to this relay will use REQ instead of NEG-OPEN
     pub fn mark_negentropy_unsupported(&mut self, relay_url: &str) {
         debug!("marking relay {} as not supporting negentropy", relay_url);
-        self.negentropy_unsupported.insert(relay_url.to_string());
+        self.negentropy_support.insert(relay_url.to_string(), (NegentropySupport::Unsupported, Instant::now()));
         // Clean up any active negentropy state for this relay
         self.active_neg_subs.retain(|url, _| url != relay_url);
         self.negentropy_managers.remove(relay_url);
     }
 
-    /// Check if a relay supports negentropy
+    /// Mark a relay as supporting negentropy (confirmed via NEG-MSG)
+    fn mark_negentropy_supported(&mut self, relay_url: &str) {
+        if let Some((state, _)) = self.negentropy_support.get(relay_url) {
+            if *state == NegentropySupport::Unknown {
+                debug!("relay {} confirmed negentropy support", relay_url);
+                self.negentropy_support.insert(relay_url.to_string(), (NegentropySupport::Supported, Instant::now()));
+            }
+        }
+    }
+
+    /// Check if a relay supports negentropy (true if Unknown or Supported)
     pub fn supports_negentropy(&self, relay_url: &str) -> bool {
-        !self.negentropy_unsupported.contains(relay_url)
+        self.negentropy_support
+            .get(relay_url)
+            .map_or(true, |(state, _)| *state != NegentropySupport::Unsupported)
     }
 
     /// Get the number of connected WebRTC peers across all WebRTC relays (synchronous)
@@ -483,15 +514,20 @@ impl RelayPool {
         // Collect relay operations to avoid borrow checker issues
         let mut neg_operations = Vec::new();
 
+        // Cache negentropy support status to avoid borrow conflicts
+        let neg_support: HashMap<String, bool> = self.relays.iter()
+            .map(|r| (r.url().to_owned(), self.supports_negentropy(r.url())))
+            .collect();
+
         for relay in &mut self.relays {
             let relay_url = relay.url().to_owned();
 
             // Try negentropy if enabled and this is a websocket relay and relay supports it
+            let relay_supports_neg = neg_support.get(&relay_url).copied().unwrap_or(true);
             let use_neg = try_negentropy
                 && matches!(relay, PoolRelay::Websocket(_))
-                && !self.negentropy_unsupported.contains(&relay_url);
+                && relay_supports_neg;
 
-            let mut using_negentropy = false;
             let msg = if use_neg && !filter.is_empty() {
                 // Check if suitable for negentropy:
                 // - Single filter only
@@ -499,7 +535,6 @@ impl RelayPool {
                 // - No limit or limit >= 20 (small limits are faster with REQ)
                 if filter.len() == 1 && should_use_negentropy(&filter[0]) {
                     debug!("using negentropy for subscription {} on {}", subid, relay_url);
-                    using_negentropy = true;
 
                     // Defer negentropy setup - will send NEG-OPEN after we have initial message
                     let filter_hash = crate::filter_hash::hash_filter(&filter[0]);
@@ -516,7 +551,7 @@ impl RelayPool {
                     ClientMessage::req(subid.clone(), filter.clone())
                 }
             } else {
-                if self.negentropy_unsupported.contains(&relay_url) {
+                if !relay_supports_neg {
                     debug!("relay {} doesn't support negentropy, using REQ for subscription {}", relay_url, subid);
                 }
                 ClientMessage::req(subid.clone(), filter.clone())
@@ -528,10 +563,6 @@ impl RelayPool {
 
             if let Err(err) = relay.send(&msg) {
                 error!("error subscribing to {}: {err}", relay_url);
-                // Cancel negentropy setup if send failed
-                if using_negentropy {
-                    neg_operations.retain(|(url, _, _, _)| url != &relay_url);
-                }
             }
         }
 
@@ -746,6 +777,9 @@ impl RelayPool {
                     if let Ok(RelayMessage::NegMsg(sub_id, payload)) = RelayMessage::from_json(text) {
                         debug!("processing NEG-MSG ({} bytes) for sub {} from {}", payload.len(), sub_id, relay_url);
 
+                        // Mark relay as supporting negentropy on first NEG-MSG receipt
+                        self.mark_negentropy_supported(&relay_url);
+
                         match self.handle_negentropy_message(&relay_url, sub_id, payload) {
                             Ok((next_msg, have_ids, need_ids)) => {
                                 if let Some(next) = next_msg {
@@ -840,6 +874,22 @@ impl RelayPool {
                     });
                 }
             }
+        }
+
+        // Check for negentropy timeouts (10s without response)
+        let now = Instant::now();
+        let timeout_duration = Duration::from_secs(10);
+        let mut timed_out_relays = Vec::new();
+
+        for (relay_url, (state, timestamp)) in &self.negentropy_support {
+            if *state == NegentropySupport::Unknown && now.duration_since(*timestamp) > timeout_duration {
+                timed_out_relays.push(relay_url.clone());
+            }
+        }
+
+        for relay_url in timed_out_relays {
+            debug!("relay {} negentropy timeout - marking unsupported", relay_url);
+            self.mark_negentropy_unsupported(&relay_url);
         }
 
         None

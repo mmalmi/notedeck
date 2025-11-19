@@ -181,10 +181,6 @@ impl SettingsAction {
                 settings.set_animate_nav_transitions(value);
             }
 
-            Self::SetMaxMediaDistance(max_distance) => {
-                settings.set_max_media_distance(max_distance);
-            }
-
             Self::SetMaxHashtagsPerNote(value) => {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
