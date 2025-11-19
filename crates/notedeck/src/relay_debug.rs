@@ -85,6 +85,9 @@ impl RelayDebugView<'_> {
                                     enostr::ClientMessage::Event { .. } => "Event",
                                     enostr::ClientMessage::Req { .. } => "Req",
                                     enostr::ClientMessage::Close { .. } => "Close",
+                                    enostr::ClientMessage::NegOpen { .. } => "NegOpen",
+                                    enostr::ClientMessage::NegClose { .. } => "NegClose",
+                                    enostr::ClientMessage::NegMsg { .. } => "NegMsg",
                                     enostr::ClientMessage::Raw(_) => "Raw",
                                 };
 

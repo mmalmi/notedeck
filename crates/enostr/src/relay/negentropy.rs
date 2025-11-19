@@ -25,10 +25,12 @@ impl NegentropySync {
 
     /// Add a note to the storage
     pub fn add_note(&mut self, note: &Note) -> Result<()> {
-        let timestamp = note.created_at();
-        let id_bytes = note.id();
-        let id = Id::from_byte_array(*id_bytes);
+        self.add_event(note.created_at(), note.id())
+    }
 
+    /// Add event by timestamp and ID (lightweight, no Note allocation)
+    pub fn add_event(&mut self, timestamp: u64, id_bytes: &[u8; 32]) -> Result<()> {
+        let id = Id::from_byte_array(*id_bytes);
         self.storage.insert(timestamp, id)
             .map_err(|e| Error::Generic(e.to_string()))?;
         Ok(())
@@ -121,6 +123,16 @@ impl NegentropyManager {
         if let Some(sync) = self.syncs.get_mut(sub_id) {
             for note in notes {
                 sync.add_note(note)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add events by (timestamp, id) pairs (lightweight)
+    pub fn add_events(&mut self, sub_id: &str, events: &[(u64, [u8; 32])]) -> Result<()> {
+        if let Some(sync) = self.syncs.get_mut(sub_id) {
+            for (timestamp, id) in events {
+                sync.add_event(*timestamp, id)?;
             }
         }
         Ok(())

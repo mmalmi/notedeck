@@ -588,7 +588,19 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                 }
             }
         }
-        RelayMessage::Notice(msg) => warn!("Notice from {}: {}", relay, msg),
+        RelayMessage::Notice(msg) => {
+            // Check if relay is signaling it doesn't support negentropy
+            let msg_lower = msg.to_lowercase();
+            if msg_lower.contains("unsupported") ||
+               msg_lower.contains("not implemented") ||
+               msg_lower.contains("neg-") ||
+               msg_lower.contains("negentropy") {
+                warn!("Notice from {}: {} (relay may not support negentropy)", relay, msg);
+                ctx.pool.mark_negentropy_unsupported(relay);
+            } else {
+                warn!("Notice from {}: {}", relay, msg);
+            }
+        }
         RelayMessage::OK(cr) => info!("OK {:?}", cr),
         RelayMessage::Eose(sid) => {
             if let Err(err) = handle_eose(
@@ -600,6 +612,13 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
             ) {
                 error!("error handling eose: {}", err);
             }
+        }
+        RelayMessage::NegMsg(subid, payload) => {
+            info!("NegMsg from {} for subscription {}: {} bytes", relay, subid, payload.len());
+        }
+        RelayMessage::NegErr(subid, error) => {
+            warn!("NegErr from {} for subscription {}: {} - marking relay as not supporting negentropy", relay, subid, error);
+            ctx.pool.mark_negentropy_unsupported(relay);
         }
     }
 }

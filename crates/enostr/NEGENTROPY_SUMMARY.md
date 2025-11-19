@@ -94,34 +94,32 @@ let init = sync.initiate()?;
 let (next, have, need) = sync.reconcile_client(&msg)?;
 ```
 
-## Protocol Messages
+## Protocol Messages (NIP-77 Standard)
 
 ### Client → Relay
 
 ```json
-// NEG-OPEN: Start sync
-["NEG-OPEN", "<sub_id>", {"kinds": [1], "limit": 100}]
+// NEG-OPEN: Start sync with initial message
+["NEG-OPEN", "<sub_id>", {"kinds": [1], "limit": 100}, "<hex_initial_msg>"]
+
+// NEG-MSG: Reconciliation with hex-encoded payload
+["NEG-MSG", "<sub_id>", "<hex_payload>"]
 
 // NEG-CLOSE: End sync
 ["NEG-CLOSE", "<sub_id>"]
 ```
 
-```
-// NEG-MSG: Binary reconciliation
-[Binary WebSocket Frame: 0x61 + negentropy payload]
-```
-
 ### Relay → Client
 
 ```json
+// NEG-MSG: Reconciliation response with hex-encoded payload
+["NEG-MSG", "<sub_id>", "<hex_payload>"]
+
 // NEG-ERR: Error response
 ["NEG-ERR", "<sub_id>", "unsupported negentropy version"]
 ```
 
-```
-// NEG-MSG: Binary response
-[Binary WebSocket Frame: negentropy payload]
-```
+All messages use standard JSON with hex-encoded binary data for strfry compatibility.
 
 ## Testing
 

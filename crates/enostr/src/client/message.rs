@@ -28,6 +28,7 @@ pub enum ClientMessage {
         sub_id: String,
         filter: Filter,
         id_size: Option<u32>,
+        initial_message: Vec<u8>,
     },
     NegClose {
         sub_id: String,
@@ -58,8 +59,8 @@ impl ClientMessage {
         ClientMessage::Close { sub_id }
     }
 
-    pub fn neg_open(sub_id: String, filter: Filter, id_size: Option<u32>) -> Self {
-        ClientMessage::NegOpen { sub_id, filter, id_size }
+    pub fn neg_open(sub_id: String, filter: Filter, id_size: Option<u32>, initial_message: Vec<u8>) -> Self {
+        ClientMessage::NegOpen { sub_id, filter, id_size, initial_message }
     }
 
     pub fn neg_close(sub_id: String) -> Self {
@@ -89,12 +90,15 @@ impl ClientMessage {
                 }
             }
             Self::Close { sub_id } => json!(["CLOSE", sub_id]).to_string(),
-            Self::NegOpen { sub_id, filter, id_size } => {
-                let filter_json = filter.json()?;
+            Self::NegOpen { sub_id, filter, id_size, initial_message } => {
+                // Parse filter JSON into serde_json::Value so it's an object, not a string
+                let filter_json_str = filter.json()?;
+                let filter_obj: serde_json::Value = serde_json::from_str(&filter_json_str)?;
+                let init_hex = hex::encode(initial_message);
                 if let Some(size) = id_size {
-                    json!(["NEG-OPEN", sub_id, filter_json, {"id_size": size}]).to_string()
+                    json!(["NEG-OPEN", sub_id, filter_obj, size, init_hex]).to_string()
                 } else {
-                    json!(["NEG-OPEN", sub_id, filter_json]).to_string()
+                    json!(["NEG-OPEN", sub_id, filter_obj, init_hex]).to_string()
                 }
             }
             Self::NegClose { sub_id } => json!(["NEG-CLOSE", sub_id]).to_string(),

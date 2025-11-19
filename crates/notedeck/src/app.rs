@@ -461,6 +461,51 @@ impl eframe::App for Notedeck {
                 break;
             };
 
+            // Handle negentropy events
+            if let Some(neg_event) = &pool_event.negentropy_event {
+                use enostr::NegentropyEvent;
+                match neg_event {
+                    NegentropyEvent::NeedLocalEvents { relay_url, sub_id, filter } => {
+                        tracing::debug!("Negentropy NeedLocalEvents for {} on {}", sub_id, relay_url);
+                        // Query local nostrdb for (timestamp, id) pairs
+                        if let Ok(txn) = nostrdb::Transaction::new(&self.ndb) {
+                            let events: Vec<(u64, [u8; 32])> = match self.ndb.query(&txn, &[filter.clone()], 1000) {
+                                Ok(results) => results.iter().map(|r| {
+                                    (r.note.created_at(), *r.note.id())
+                                }).collect(),
+                                Err(_) => vec![],
+                            };
+                            tracing::debug!("Providing {} local events for negentropy sync", events.len());
+                            if let Err(e) = self.pool.add_negentropy_events(relay_url, sub_id, filter.clone(), &events) {
+                                tracing::warn!("Failed to add negentropy events: {}", e);
+                            }
+                        }
+                    }
+                    NegentropyEvent::NeedEvents { relay_url, sub_id, event_ids } => {
+                        tracing::info!("Negentropy NeedEvents: {} IDs for {} on {}", event_ids.len(), sub_id, relay_url);
+                        // Fetch events from relay
+                        if !event_ids.is_empty() {
+                            let id_bytes: Vec<[u8; 32]> = event_ids.iter().filter_map(|hex_id| {
+                                let mut bytes = [0u8; 32];
+                                hex::decode_to_slice(hex_id, &mut bytes).ok().map(|_| bytes)
+                            }).collect();
+                            let fetch_filter = nostrdb::Filter::new().ids(id_bytes.iter()).build();
+                            let fetch_msg = enostr::ClientMessage::req(format!("{}-fetch", sub_id), vec![fetch_filter]);
+                            self.pool.send(&fetch_msg);
+                        }
+                    }
+                    NegentropyEvent::HaveEvents { event_ids, .. } => {
+                        tracing::debug!("Negentropy: we have {} events relay doesn't", event_ids.len());
+                    }
+                    NegentropyEvent::SyncComplete { sub_id, .. } => {
+                        tracing::info!("Negentropy sync complete for {}", sub_id);
+                    }
+                    NegentropyEvent::Error { sub_id, error, .. } => {
+                        tracing::warn!("Negentropy error for {}: {}", sub_id, error);
+                    }
+                }
+            }
+
             use enostr::RelayEvent;
             match (&pool_event.event).into() {
                 RelayEvent::Opened => {
@@ -925,6 +970,12 @@ impl Notedeck {
                 if self.session_subscriptions.contains(&subid.to_string()) {
                     tracing::trace!("EOSE for session subscription: {}", subid);
                 }
+            }
+            RelayMessage::NegMsg(subid, payload) => {
+                tracing::trace!("NegMsg from {} for subscription {}: {} bytes", relay, subid, payload.len());
+            }
+            RelayMessage::NegErr(subid, error) => {
+                tracing::warn!("NegErr from {} for subscription {}: {}", relay, subid, error);
             }
         }
     }

@@ -2,7 +2,7 @@ use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
 use crate::relay::webrtc::WebRTCRelay;
 use crate::relay::negentropy::NegentropyManager;
 use crate::{ClientMessage, Error, Result};
-use nostrdb::Filter;
+use nostrdb::{Filter, Note};
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -10,43 +10,116 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use ewebsock::{WsEvent, WsMessage};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use super::subs_debug::SubsDebug;
 
-/// Check if a filter is suitable for negentropy sync
+/// Check if a filter is suitable for negentropy sync (matches NDK logic)
 fn should_use_negentropy(filter: &Filter) -> bool {
-    // Check if has ids filter (only called once per subscription, minimal overhead)
-    if let Ok(json) = filter.json() {
-        if json.contains("\"ids\"") {
-            return false;
+    // Get filter JSON for inspection
+    let json = match filter.json() {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+
+    // Skip if has ids filter
+    if json.contains("\"ids\"") {
+        return false;
+    }
+
+    // Check for single author
+    let has_single_author = json.contains("\"authors\"") && json.matches("\"authors\"").count() == 1;
+
+    if has_single_author {
+        // Skip if all kinds are replaceable (10000-19999 or 0, 3)
+        // Relays only keep latest, negentropy pointless
+        if json.contains("\"kinds\"") {
+            // Parse kinds to check if all replaceable
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+                if let Some(kinds) = parsed.get("kinds").and_then(|k| k.as_array()) {
+                    let all_replaceable = kinds.iter().all(|k| {
+                        if let Some(kind) = k.as_u64() {
+                            kind == 0 || kind == 3 || (10000..=19999).contains(&kind)
+                        } else {
+                            false
+                        }
+                    });
+                    if all_replaceable {
+                        return false;
+                    }
+
+                    // Skip if addressable/parameterized (30000-39999) with "d" tag filter
+                    let has_addressable = kinds.iter().any(|k| {
+                        if let Some(kind) = k.as_u64() {
+                            (30000..=39999).contains(&kind)
+                        } else {
+                            false
+                        }
+                    });
+                    if has_addressable && json.contains("\"#d\"") {
+                        return false;
+                    }
+                }
+            }
         }
     }
 
     // Use negentropy if no limit or limit >= 20
-    // Small limits are faster with traditional REQ
     filter.limit().map_or(true, |limit| limit >= 20)
 }
 
-#[derive(Debug)]
-pub struct PoolEvent<'a> {
-    pub relay: &'a str,
-    pub event: ewebsock::WsEvent,
+/// Negentropy sync events emitted by the pool
+#[derive(Debug, Clone)]
+pub enum NegentropyEvent {
+    /// Pool needs local events for a filter to seed negentropy sync
+    /// App should query ndb and call pool.add_negentropy_notes()
+    NeedLocalEvents {
+        relay_url: String,
+        sub_id: String,
+        filter: Filter,
+    },
+    /// Reconciliation complete, these are event IDs we need to fetch
+    NeedEvents {
+        relay_url: String,
+        sub_id: String,
+        event_ids: Vec<String>,
+    },
+    /// Reconciliation complete, these are event IDs the relay needs (we have)
+    HaveEvents {
+        relay_url: String,
+        sub_id: String,
+        event_ids: Vec<String>,
+    },
+    /// Negentropy sync completed successfully
+    SyncComplete {
+        relay_url: String,
+        sub_id: String,
+    },
+    /// Negentropy error occurred
+    Error {
+        relay_url: String,
+        sub_id: String,
+        error: String,
+    },
 }
 
-impl PoolEvent<'_> {
-    pub fn into_owned(self) -> PoolEventBuf {
-        PoolEventBuf {
-            relay: self.relay.to_owned(),
-            event: self.event,
-        }
+#[derive(Debug)]
+pub struct PoolEvent {
+    pub relay: String,
+    pub event: ewebsock::WsEvent,
+    /// Optional negentropy event that needs app-level handling
+    pub negentropy_event: Option<NegentropyEvent>,
+}
+
+impl PoolEvent {
+    /// No-op for backwards compat - PoolEvent is already owned
+    pub fn into_owned(self) -> Self {
+        self
     }
 }
 
-pub struct PoolEventBuf {
-    pub relay: String,
-    pub event: ewebsock::WsEvent,
-}
+// Deprecated, keeping for backwards compat
+pub type PoolEventBuf = PoolEvent;
 
 pub enum PoolRelay {
     Websocket(WebsocketRelay),
@@ -157,9 +230,15 @@ pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
     pub debug: Option<SubsDebug>,
-    #[allow(dead_code)] // Will be used for handling NEG-MSG responses
     negentropy_managers: HashMap<String, NegentropyManager>, // relay_url -> manager
     use_negentropy: bool,
+    /// Pending negentropy events to be consumed by app
+    negentropy_events: Vec<NegentropyEvent>,
+    /// Track active negentropy subscriptions per relay: relay_url -> sub_id
+    active_neg_subs: HashMap<String, String>,
+    /// Track relays that don't support negentropy (received NEG-ERR or unsupported NOTICE)
+    /// These relays will use traditional REQ instead
+    negentropy_unsupported: std::collections::HashSet<String>,
 }
 
 impl Default for RelayPool {
@@ -177,6 +256,9 @@ impl RelayPool {
             debug: None,
             negentropy_managers: HashMap::new(),
             use_negentropy: true,
+            negentropy_events: Vec::new(),
+            active_neg_subs: HashMap::new(),
+            negentropy_unsupported: std::collections::HashSet::new(),
         }
     }
 
@@ -203,6 +285,47 @@ impl RelayPool {
         manager.start_sync(sub_id.to_string(), filter_hash)
     }
 
+    /// Add local notes to a negentropy sync session and send NEG-OPEN
+    /// Call this after receiving NeedLocalEvents
+    pub fn add_negentropy_notes(&mut self, relay_url: &str, sub_id: &str, filter: Filter, notes: &[Note]) -> Result<()> {
+        let manager = self.get_neg_manager(relay_url);
+        manager.add_notes(sub_id, notes)?;
+
+        // Seal and initiate sync to get initial message
+        let init_msg = manager.initiate(sub_id)?;
+
+        // Send NEG-OPEN with initial message (NIP-77 format)
+        if let Some(relay) = self.relays.iter_mut().find(|r| r.url() == relay_url) {
+            debug!("sending NEG-OPEN with {} byte init msg for sub {} to {}", init_msg.len(), sub_id, relay_url);
+            let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter, None, init_msg);
+            relay.send(&neg_open)?;
+        } else {
+            return Err(Error::Generic(format!("relay {} not found", relay_url)));
+        }
+
+        Ok(())
+    }
+
+    /// Add local events as (timestamp, id) pairs (lightweight, no Note clone)
+    pub fn add_negentropy_events(&mut self, relay_url: &str, sub_id: &str, filter: Filter, events: &[(u64, [u8; 32])]) -> Result<()> {
+        let manager = self.get_neg_manager(relay_url);
+        manager.add_events(sub_id, events)?;
+
+        // Seal and initiate sync
+        let init_msg = manager.initiate(sub_id)?;
+
+        // Send NEG-OPEN
+        if let Some(relay) = self.relays.iter_mut().find(|r| r.url() == relay_url) {
+            debug!("sending NEG-OPEN with {} byte init msg ({} events) for sub {} to {}", init_msg.len(), events.len(), sub_id, relay_url);
+            let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter, None, init_msg);
+            relay.send(&neg_open)?;
+        } else {
+            return Err(Error::Generic(format!("relay {} not found", relay_url)));
+        }
+
+        Ok(())
+    }
+
     /// Close negentropy sync for a subscription on a relay
     pub fn close_negentropy_sync(&mut self, relay_url: &str, sub_id: &str) {
         if let Some(manager) = self.negentropy_managers.get_mut(relay_url) {
@@ -210,7 +333,8 @@ impl RelayPool {
         }
     }
 
-    /// Process binary NEG-MSG response
+    /// Process NEG-MSG response (hex-decoded payload)
+    /// Returns (next_msg, have_ids, need_ids)
     pub fn handle_negentropy_message(
         &mut self,
         relay_url: &str,
@@ -226,6 +350,21 @@ impl RelayPool {
         for manager in self.negentropy_managers.values_mut() {
             manager.cleanup_stale();
         }
+    }
+
+    /// Mark a relay as not supporting negentropy
+    /// Future subscriptions to this relay will use REQ instead of NEG-OPEN
+    pub fn mark_negentropy_unsupported(&mut self, relay_url: &str) {
+        debug!("marking relay {} as not supporting negentropy", relay_url);
+        self.negentropy_unsupported.insert(relay_url.to_string());
+        // Clean up any active negentropy state for this relay
+        self.active_neg_subs.retain(|url, _| url != relay_url);
+        self.negentropy_managers.remove(relay_url);
+    }
+
+    /// Check if a relay supports negentropy
+    pub fn supports_negentropy(&self, relay_url: &str) -> bool {
+        !self.negentropy_unsupported.contains(relay_url)
     }
 
     /// Get the number of connected WebRTC peers across all WebRTC relays (synchronous)
@@ -341,12 +480,18 @@ impl RelayPool {
 
     /// Subscribe with explicit negentropy control
     pub fn subscribe_with_negentropy(&mut self, subid: String, filter: Vec<Filter>, try_negentropy: bool) {
+        // Collect relay operations to avoid borrow checker issues
+        let mut neg_operations = Vec::new();
+
         for relay in &mut self.relays {
             let relay_url = relay.url().to_owned();
 
-            // Try negentropy if enabled and this is a websocket relay
-            let use_neg = try_negentropy && matches!(relay, PoolRelay::Websocket(_));
+            // Try negentropy if enabled and this is a websocket relay and relay supports it
+            let use_neg = try_negentropy
+                && matches!(relay, PoolRelay::Websocket(_))
+                && !self.negentropy_unsupported.contains(&relay_url);
 
+            let mut using_negentropy = false;
             let msg = if use_neg && !filter.is_empty() {
                 // Check if suitable for negentropy:
                 // - Single filter only
@@ -354,7 +499,14 @@ impl RelayPool {
                 // - No limit or limit >= 20 (small limits are faster with REQ)
                 if filter.len() == 1 && should_use_negentropy(&filter[0]) {
                     debug!("using negentropy for subscription {} on {}", subid, relay_url);
-                    ClientMessage::neg_open(subid.clone(), filter[0].clone(), None)
+                    using_negentropy = true;
+
+                    // Defer negentropy setup - will send NEG-OPEN after we have initial message
+                    let filter_hash = crate::filter_hash::hash_filter(&filter[0]);
+                    neg_operations.push((relay_url.clone(), subid.clone(), filter_hash, filter[0].clone()));
+
+                    // Don't send anything yet - wait for app to provide local events
+                    continue;
                 } else {
                     if filter.len() > 1 {
                         debug!("falling back to REQ for multi-filter subscription {} on {}", subid, relay_url);
@@ -364,6 +516,9 @@ impl RelayPool {
                     ClientMessage::req(subid.clone(), filter.clone())
                 }
             } else {
+                if self.negentropy_unsupported.contains(&relay_url) {
+                    debug!("relay {} doesn't support negentropy, using REQ for subscription {}", relay_url, subid);
+                }
                 ClientMessage::req(subid.clone(), filter.clone())
             };
 
@@ -373,6 +528,27 @@ impl RelayPool {
 
             if let Err(err) = relay.send(&msg) {
                 error!("error subscribing to {}: {err}", relay_url);
+                // Cancel negentropy setup if send failed
+                if using_negentropy {
+                    neg_operations.retain(|(url, _, _, _)| url != &relay_url);
+                }
+            }
+        }
+
+        // Now perform negentropy setup without conflicting borrows
+        for (relay_url, sub_id, filter_hash, filter) in neg_operations {
+            if let Err(e) = self.start_negentropy_sync(&relay_url, &sub_id, filter_hash) {
+                warn!("failed to start negentropy sync: {}", e);
+            } else {
+                // Track active negentropy subscription
+                self.active_neg_subs.insert(relay_url.clone(), sub_id.clone());
+
+                // Queue event for app to provide local events
+                self.negentropy_events.push(NegentropyEvent::NeedLocalEvents {
+                    relay_url,
+                    sub_id,
+                    filter,
+                });
             }
         }
     }
@@ -512,10 +688,12 @@ impl RelayPool {
     /// function searches each relay in the list in order, attempting to
     /// receive a message from each. If a message is received, return it.
     /// If no message is received from any relays, None is returned.
-    pub fn try_recv(&mut self) -> Option<PoolEvent<'_>> {
+    pub fn try_recv(&mut self) -> Option<PoolEvent> {
+        // First pass: collect events without processing
+        let mut relay_events: Vec<(String, WsEvent)> = Vec::new();
+
         for relay in &mut self.relays {
             if let PoolRelay::Multicast(mcr) = relay {
-                // try rejoin on multicast
                 if mcr.should_rejoin() {
                     if let Err(err) = mcr.rejoin() {
                         error!("multicast: rejoin error: {err}");
@@ -524,6 +702,9 @@ impl RelayPool {
             }
 
             if let Some(event) = relay.try_recv() {
+                let relay_url = relay.url().to_string();
+
+                // Handle status changes immediately (needs mutable relay)
                 match &event {
                     WsEvent::Opened => {
                         relay.set_status(RelayStatus::Connected);
@@ -536,10 +717,9 @@ impl RelayPool {
                         relay.set_status(RelayStatus::Disconnected);
                     }
                     WsEvent::Message(ev) => {
-                        // Handle pings
                         #[cfg(not(target_arch = "wasm32"))]
                         if let WsMessage::Ping(ref bs) = ev {
-                            trace!("pong {}", relay.url());
+                            trace!("pong {}", relay_url);
                             match relay {
                                 PoolRelay::Websocket(wsr) => {
                                     wsr.relay.sender.send(WsMessage::Pong(bs.to_owned()));
@@ -548,31 +728,117 @@ impl RelayPool {
                                 PoolRelay::WebRTC(_) => {}
                             }
                         }
+                    }
+                }
 
-                        // Handle binary negentropy messages
-                        if let WsMessage::Binary(ref data) = ev {
-                            if self.use_negentropy {
-                                debug!("received binary NEG-MSG ({} bytes) from {}", data.len(), relay.url());
-                                // Binary NEG-MSG responses are passed through to the application
-                                // The application layer will need to:
-                                // 1. Match this to the active subscription
-                                // 2. Call negentropy_manager.reconcile()
-                                // 3. Send next NEG-MSG or fetch missing events
+                // Collect event for processing
+                relay_events.push((relay_url, event));
+                break; // Process one event at a time
+            }
+        }
+
+        // Second pass: process collected events (no borrow conflicts)
+        if let Some((relay_url, event)) = relay_events.pop() {
+            // Handle NEG-MSG responses
+            if let WsEvent::Message(WsMessage::Text(ref text)) = &event {
+                if text.contains("\"NEG-MSG\"") {
+                    use crate::relay::message::RelayMessage;
+                    if let Ok(RelayMessage::NegMsg(sub_id, payload)) = RelayMessage::from_json(text) {
+                        debug!("processing NEG-MSG ({} bytes) for sub {} from {}", payload.len(), sub_id, relay_url);
+
+                        match self.handle_negentropy_message(&relay_url, sub_id, payload) {
+                            Ok((next_msg, have_ids, need_ids)) => {
+                                if let Some(next) = next_msg {
+                                    // Send next NEG-MSG
+                                    debug!("sending next NEG-MSG ({} bytes) for sub {} to {}", next.len(), sub_id, relay_url);
+                                    if let Some(r) = self.relays.iter_mut().find(|r| r.url() == &relay_url) {
+                                        if let Err(e) = r.send(&ClientMessage::neg_msg(sub_id.to_string(), next)) {
+                                            error!("failed to send NEG-MSG: {}", e);
+                                        }
+                                    }
+                                    return self.try_recv(); // Recurse to get next event
+                                } else {
+                                    // Sync complete - emit NeedEvents for caller to fetch
+                                    debug!("negentropy sync complete for {}: have={}, need={}", sub_id, have_ids.len(), need_ids.len());
+
+                                    if !need_ids.is_empty() {
+                                        self.negentropy_events.push(NegentropyEvent::NeedEvents {
+                                            relay_url: relay_url.clone(),
+                                            sub_id: sub_id.to_string(),
+                                            event_ids: need_ids,
+                                        });
+                                    }
+                                    if !have_ids.is_empty() {
+                                        self.negentropy_events.push(NegentropyEvent::HaveEvents {
+                                            relay_url: relay_url.clone(),
+                                            sub_id: sub_id.to_string(),
+                                            event_ids: have_ids,
+                                        });
+                                    }
+
+                                    self.negentropy_events.push(NegentropyEvent::SyncComplete {
+                                        relay_url: relay_url.clone(),
+                                        sub_id: sub_id.to_string(),
+                                    });
+
+                                    self.active_neg_subs.remove(&relay_url);
+                                    return self.try_recv(); // Recurse to emit queued events
+                                }
+                            }
+                            Err(e) => {
+                                error!("negentropy reconciliation failed for {}: {}", relay_url, e);
+                                self.negentropy_events.push(NegentropyEvent::Error {
+                                    relay_url: relay_url.clone(),
+                                    sub_id: sub_id.to_string(),
+                                    error: e.to_string(),
+                                });
+                                self.active_neg_subs.remove(&relay_url);
                             }
                         }
                     }
                 }
+            }
 
-                if let Some(debug) = &mut self.debug {
-                    debug.receive_cmd(relay.url().to_owned(), (&event).into());
-                }
+            // Return event to caller
+            if let Some(debug) = &mut self.debug {
+                debug.receive_cmd(relay_url.clone(), (&event).into());
+            }
 
-                let pool_event = PoolEvent {
-                    event,
-                    relay: relay.url(),
+            let neg_event = self.negentropy_events.pop();
+
+            return Some(PoolEvent {
+                event,
+                relay: relay_url,
+                negentropy_event: neg_event,
+            });
+        }
+
+        // If no WS events but we have queued negentropy events, emit them
+        // Note: We return them piggybacked on a synthetic EOSE event to avoid
+        // "empty message" errors from dummy events
+        if !self.negentropy_events.is_empty() {
+            if let Some(neg_event) = self.negentropy_events.pop() {
+                let relay_url = match &neg_event {
+                    NegentropyEvent::NeedLocalEvents { relay_url, .. }
+                    | NegentropyEvent::NeedEvents { relay_url, .. }
+                    | NegentropyEvent::HaveEvents { relay_url, .. }
+                    | NegentropyEvent::SyncComplete { relay_url, .. }
+                    | NegentropyEvent::Error { relay_url, .. } => relay_url,
                 };
 
-                return Some(pool_event);
+                // Find the relay
+                if self.relays.iter().any(|r| r.url() == relay_url) {
+                    // Use a synthetic EOSE with special ID to avoid empty message errors
+                    // App can ignore EOSE for "_negentropy_event" subscription
+                    let event = WsEvent::Message(WsMessage::Text(
+                        r#"["EOSE","_negentropy_event"]"#.to_string()
+                    ));
+                    return Some(PoolEvent {
+                        event,
+                        relay: relay_url.to_string(),
+                        negentropy_event: Some(neg_event),
+                    });
+                }
             }
         }
 

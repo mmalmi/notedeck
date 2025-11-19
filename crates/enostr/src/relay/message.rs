@@ -92,6 +92,30 @@ impl<'a> RelayMessage<'a> {
             return Err(Error::DecodeFailed("message too short".into()));
         }
 
+        // NEG-MSG (NIP-77 JSON format)
+        // Relay response format: ["NEG-MSG", <subscription_id>, <hex-encoded message>]
+        if msg.len() >= 12 && &msg[0..=10] == "[\"NEG-MSG\"," {
+            let mut start = 12;
+            while let Some(&b' ') = msg.as_bytes().get(start) {
+                start += 1;
+            }
+            if let Some(comma_index) = msg[start..].find(',') {
+                let subid_end = start + comma_index;
+                let subid = &msg[start..subid_end].trim().trim_matches('"');
+                let mut hex_start = subid_end + 1;
+                while let Some(&b' ') = msg.as_bytes().get(hex_start) {
+                    hex_start += 1;
+                }
+                let hex_msg = &msg[hex_start..msg.len()-2].trim().trim_matches('"');
+                // Decode hex to bytes - will be handled by pool
+                if let Ok(payload) = hex::decode(hex_msg) {
+                    // Store hex string as bytes for now, pool will handle reconciliation
+                    // We'll use a static allocation for lifetime
+                    return Ok(RelayMessage::NegMsg(subid, Box::leak(payload.into_boxed_slice())));
+                }
+            }
+        }
+
         // NEG-ERR (NIP-77)
         // Relay response format: ["NEG-ERR", <subscription_id>, <error>]
         if msg.len() >= 12 && &msg[0..=10] == "[\"NEG-ERR\"," {

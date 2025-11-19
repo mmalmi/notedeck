@@ -20,7 +20,7 @@ pub use profile::ProfileState;
 pub use pubkey::{Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
 pub use relay::negentropy::{NegentropyManager, NegentropySync};
-pub use relay::pool::{PoolEvent, PoolRelay, RelayPool};
+pub use relay::pool::{NegentropyEvent, PoolEvent, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
 pub use relay::webrtc::{
     HeartbeatManager, MutualFollowDetector, OnlineStatus, PeerConnection,

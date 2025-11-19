@@ -64,15 +64,23 @@ fn test_cleanup_stale_sessions() {
 
 #[test]
 fn test_neg_open_message_format() {
+    use enostr::{NegentropySync, hash_filter};
+
     let sub_id = "test-sub".to_string();
     let filter = FilterBuilder::new().kinds(vec![1]).limit(100).build();
 
-    let msg = ClientMessage::neg_open(sub_id.clone(), filter, None);
+    // Create initial message
+    let mut sync = NegentropySync::new(hash_filter(&filter));
+    sync.seal().expect("seal");
+    let init = sync.initiate().expect("initiate");
 
-    // Should serialize to JSON
+    let msg = ClientMessage::neg_open(sub_id.clone(), filter, None, init);
+
+    // Should serialize to JSON with hex-encoded initial message
     let json = msg.to_json().unwrap();
     assert!(json.contains("NEG-OPEN"));
     assert!(json.contains(&sub_id));
+    assert!(json.len() > 50); // Should include hex payload
 }
 
 #[test]

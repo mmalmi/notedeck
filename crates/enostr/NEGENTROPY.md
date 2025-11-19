@@ -30,17 +30,19 @@ Negentropy reduces bandwidth by 10-100x compared to traditional REQ/EVENT protoc
    - Simple hash for session tracking
    - SHA256 for cryptographic needs
 
-### Protocol Messages
+### Protocol Messages (NIP-77 Standard)
 
 **Client → Relay:**
-- `NEG-OPEN <sub_id> <filter> [options]` - JSON, initiates sync
-- `NEG-MSG <sub_id> <payload>` - Binary reconciliation message
-- `NEG-CLOSE <sub_id>` - JSON, terminates sync
+- `["NEG-OPEN", <sub_id>, <filter>, <initial_msg_hex>]` - JSON, initiates sync
+- `["NEG-MSG", <sub_id>, <hex_payload>]` - JSON with hex-encoded reconciliation data
+- `["NEG-CLOSE", <sub_id>]` - JSON, terminates sync
 
 **Relay → Client:**
-- `NEG-MSG <sub_id> <payload>` - Binary reconciliation response
-- `NEG-ERR <sub_id> <error>` - JSON error message
+- `["NEG-MSG", <sub_id>, <hex_payload>]` - JSON with hex-encoded reconciliation response
+- `["NEG-ERR", <sub_id>, <error>]` - JSON error message
 - Falls back to standard EVENT/EOSE on errors
+
+All messages use standard JSON format with hex-encoded binary data (strfry compatible).
 
 ## Usage
 

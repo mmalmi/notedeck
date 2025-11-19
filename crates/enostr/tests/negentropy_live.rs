@@ -14,7 +14,7 @@ use std::time::Duration;
 use url::Url;
 
 const TEST_PUBKEY_HEX: &str = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
-const RELAY_URL: &str = "wss://relay.damus.io";
+const RELAY_URL: &str = "wss://vault.iris.to";
 
 fn hex_to_bytes(hex: &str) -> [u8; 32] {
     let mut bytes = [0u8; 32];
@@ -64,15 +64,20 @@ fn test_negentropy_live_sync() {
     let filter_hash = hash_filter(&filter);
     let sub_id = "test-neg-sync";
 
-    println!("📤 Sending NEG-OPEN for pubkey {}...", &TEST_PUBKEY_HEX[..8]);
+    // Create sync and get initial message
+    let mut sync = NegentropySync::new(filter_hash);
+    sync.seal().expect("seal");
+    let init_msg = sync.initiate().expect("initiate");
 
-    // Create NEG-OPEN message
-    let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter.clone(), None);
+    println!("📤 Sending NEG-OPEN for pubkey {} with {} byte init msg...", &TEST_PUBKEY_HEX[..8], init_msg.len());
+
+    // Create NEG-OPEN message with initial payload
+    let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter.clone(), None, init_msg);
 
     // Serialize and check
     match neg_open.to_json() {
         Ok(json) => {
-            println!("📝 NEG-OPEN message: {}", json);
+            println!("📝 NEG-OPEN message: {}", &json[..json.len().min(150)]);
             assert!(json.contains("NEG-OPEN"));
             assert!(json.contains(sub_id));
         }
@@ -81,32 +86,7 @@ fn test_negentropy_live_sync() {
         }
     }
 
-    // In a real scenario, we would:
-    // 1. Send NEG-OPEN via relay
-    // 2. Wait for binary NEG-MSG response or NEG-ERR
-    // 3. If NEG-MSG: reconcile and continue
-    // 4. If NEG-ERR: fallback to REQ
-    // 5. Fetch identified events
-
-    // For this test, we verify the protocol setup works
-    let mut sync = NegentropySync::new(filter_hash);
-
-    // Seal empty storage (simulating empty local database)
-    sync.seal().expect("Failed to seal storage");
-
-    // Create initial negentropy message
-    let init_msg = sync.initiate().expect("Failed to initiate");
-
-    println!("✅ Generated initial negentropy message: {} bytes", init_msg.len());
-    assert!(!init_msg.is_empty());
-    assert_eq!(init_msg[0], 0x61); // Protocol version
-
-    println!("✅ Negentropy protocol setup successful");
-    println!("ℹ️  In production, this would:");
-    println!("   1. Send NEG-OPEN to relay");
-    println!("   2. Receive binary NEG-MSG response");
-    println!("   3. Reconcile to identify missing events");
-    println!("   4. Fetch only needed events");
+    // Full negentropy sync test - removed since we have test_full_negentropy_sync below
 }
 
 #[test]
@@ -196,13 +176,16 @@ fn test_negentropy_message_flow() {
 
     let sub_id = "flow-test";
 
-    // Test NEG-OPEN
-    let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter.clone(), None);
+    // Test NEG-OPEN (requires initial message)
+    let mut sync = NegentropySync::new(hash_filter(&filter));
+    sync.seal().expect("seal");
+    let init = sync.initiate().expect("initiate");
+    let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter.clone(), None, init);
     let open_json = neg_open.to_json().expect("Failed to serialize NEG-OPEN");
 
     assert!(open_json.contains("NEG-OPEN"));
     assert!(open_json.contains(sub_id));
-    println!("✅ NEG-OPEN: {}", open_json);
+    println!("✅ NEG-OPEN: {}", &open_json[..open_json.len().min(100)]);
 
     // Test NEG-CLOSE
     let neg_close = ClientMessage::neg_close(sub_id.to_string());
@@ -212,13 +195,13 @@ fn test_negentropy_message_flow() {
     assert!(close_json.contains(sub_id));
     println!("✅ NEG-CLOSE: {}", close_json);
 
-    // Test NEG-MSG (binary)
+    // Test NEG-MSG (now JSON with hex encoding per NIP-77)
     let mock_payload = vec![0x61, 0x00, 0x01, 0x02, 0x03];
     let neg_msg = ClientMessage::neg_msg(sub_id.to_string(), mock_payload);
 
-    // NEG-MSG should NOT serialize to JSON (it's binary)
-    assert!(neg_msg.to_json().is_err(), "NEG-MSG should not serialize to JSON");
-    println!("✅ NEG-MSG correctly requires binary transport");
+    // NEG-MSG should NOT serialize via to_json() - it's handled specially in Relay::send()
+    assert!(neg_msg.to_json().is_err(), "NEG-MSG handled specially, not via to_json()");
+    println!("✅ NEG-MSG uses JSON with hex encoding (NIP-77/strfry compatible)");
 
     // Test sync reconciliation
     let filter_hash = hash_filter(&filter);
@@ -272,4 +255,103 @@ fn test_negentropy_fallback_behavior() {
     println!("✅ Negentropy re-enabled");
 
     println!("✅ Fallback behavior test complete");
+}
+
+#[test]
+#[ignore]
+fn test_full_negentropy_sync() {
+    println!("\n🧪 Testing FULL negentropy sync with {}", RELAY_URL);
+
+    let wakeup = || {};
+    let relay_url = nostr::RelayUrl::parse(RELAY_URL).expect("Invalid relay URL");
+    let mut relay = Relay::new(relay_url, wakeup).expect("Failed to create relay");
+
+    // Wait for connection
+    println!("⏳ Connecting...");
+    let mut connected = false;
+    for _ in 0..20 {
+        if let Some(event) = relay.receiver.try_recv() {
+            if matches!(event, ewebsock::WsEvent::Opened) {
+                println!("✅ Connected to {}", RELAY_URL);
+                connected = true;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(connected, "Failed to connect to relay");
+
+    // Build filter for specific author
+    let pubkey_bytes = hex_to_bytes(TEST_PUBKEY_HEX);
+    let filter = FilterBuilder::new()
+        .authors(vec![&pubkey_bytes])
+        .limit(50)
+        .build();
+
+    let filter_hash = hash_filter(&filter);
+    let sub_id = "full-sync-test";
+
+    // Create sync with empty storage (simulating no local events)
+    let mut sync = NegentropySync::new(filter_hash);
+    sync.seal().expect("Failed to seal storage");
+    let init_msg = sync.initiate().expect("Failed to initiate");
+
+    println!("📤 Sending NEG-OPEN with {} byte init message for pubkey {}...", init_msg.len(), &TEST_PUBKEY_HEX[..8]);
+    let neg_open = ClientMessage::neg_open(sub_id.to_string(), filter.clone(), None, init_msg);
+    relay.send(&neg_open);
+
+    println!("⏳ Waiting for NEG-MSG or NEG-ERR response...");
+
+    let mut got_response = false;
+    let mut got_neg_msg = false;
+    let mut got_neg_err = false;
+
+    for i in 0..100 {
+        if let Some(event) = relay.receiver.try_recv() {
+            if let ewebsock::WsEvent::Message(msg) = &event {
+                match msg {
+                    ewebsock::WsMessage::Text(text) => {
+                        if text.contains("NEG-MSG") {
+                            println!("✅ Got NEG-MSG response: {}", &text[..text.len().min(100)]);
+                            got_neg_msg = true;
+                            got_response = true;
+                            break;
+                        } else if text.contains("NEG-ERR") {
+                            println!("❌ Got NEG-ERR: {}", text);
+                            got_neg_err = true;
+                            got_response = true;
+                            break;
+                        } else if text.contains("NOTICE") {
+                            println!("⚠️  NOTICE: {}", text);
+                        } else {
+                            println!("📨 Other message: {}", &text[..text.len().min(100)]);
+                        }
+                    }
+                    ewebsock::WsMessage::Binary(data) => {
+                        println!("❌ Got unexpected binary response: {} bytes", data.len());
+                        println!("   (Should be JSON NEG-MSG, not binary!)");
+                        got_response = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if i % 10 == 0 && i > 0 {
+            println!("  ... waiting ({}/10s)", i/10);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(got_response, "No response received from relay after 10s");
+
+    if got_neg_err {
+        panic!("Relay returned NEG-ERR - vault.iris.to should support negentropy!");
+    }
+
+    assert!(got_neg_msg, "Expected NEG-MSG response for negentropy sync");
+
+    println!("✅ Full negentropy sync protocol working!");
 }

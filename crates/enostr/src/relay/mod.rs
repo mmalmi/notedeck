@@ -198,8 +198,11 @@ impl Relay {
     pub fn send(&mut self, msg: &ClientMessage) {
         match msg {
             ClientMessage::NegMsg { sub_id, message } => {
-                debug!("sending negentropy binary message ({} bytes) for sub {} to {}", message.len(), sub_id, self.url);
-                self.sender.send(WsMessage::Binary(message.clone()));
+                // NIP-77 standard: JSON with hex encoding (strfry compatible)
+                let hex_msg = hex::encode(message);
+                let json = serde_json::json!(["NEG-MSG", sub_id, hex_msg]).to_string();
+                debug!("sending NEG-MSG JSON ({} bytes hex) for sub {} to {}", hex_msg.len(), sub_id, self.url);
+                self.sender.send(WsMessage::Text(json));
             }
             _ => {
                 let json = match msg.to_json() {
