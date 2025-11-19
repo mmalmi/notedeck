@@ -111,6 +111,7 @@ pub enum SettingsAction {
     SetAnimateNavTransitions(bool),
     SetMaxMediaDistance(u32),
     SetMaxHashtagsPerNote(usize),
+    SetUseNegentropy(bool),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -184,6 +185,11 @@ impl SettingsAction {
             Self::SetMaxHashtagsPerNote(value) => {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
+            }
+
+            Self::SetUseNegentropy(value) => {
+                settings.set_use_negentropy(value);
+                pool.set_use_negentropy(value);
             }
 
             Self::RecrawlSocialGraph(max_distance) => {
@@ -688,6 +694,40 @@ impl<'a> SettingsView<'a> {
                     ));
                 }
             });
+
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
+
+            // Negentropy sync row
+            ui.horizontal(|ui| {
+                ui.set_height(44.0);
+                ui.add_space(16.0);
+                ui.label(RichText::new("Use negentropy sync")
+                    .text_style(NotedeckTextStyle::Body.text_style()));
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
+
+                    if ui.add(segmented_button("On", self.settings.use_negentropy, ui)).clicked() {
+                        self.settings.use_negentropy = true;
+                        action = Some(SettingsAction::SetUseNegentropy(true));
+                    }
+
+                    ui.add_space(4.0);
+
+                    if ui.add(segmented_button("Off", !self.settings.use_negentropy, ui)).clicked() {
+                        self.settings.use_negentropy = false;
+                        action = Some(SettingsAction::SetUseNegentropy(false));
+                    }
+                });
+            });
+
+            ui.painter().line_segment(
+                [egui::pos2(ui.min_rect().left() + 16.0, ui.min_rect().bottom()), egui::pos2(ui.min_rect().right(), ui.min_rect().bottom())],
+                egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            );
 
             ui.horizontal_wrapped(|ui| {
                 ui.label(richtext_small(tr!(

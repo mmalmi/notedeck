@@ -15,6 +15,7 @@ const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
 const DEFAULT_MAX_MEDIA_DISTANCE: u32 = 3;
+const DEFAULT_USE_NEGENTROPY: bool = false;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -43,6 +44,8 @@ pub struct Settings {
     #[serde(default = "default_max_media_distance")]
     pub max_media_distance: u32,
     pub max_hashtags_per_note: usize,
+    #[serde(default = "default_use_negentropy")]
+    pub use_negentropy: bool,
 }
 
 fn default_max_media_distance() -> u32 {
@@ -51,6 +54,10 @@ fn default_max_media_distance() -> u32 {
 
 fn default_animate_nav_transitions() -> bool {
     true
+}
+
+fn default_use_negentropy() -> bool {
+    DEFAULT_USE_NEGENTROPY
 }
 
 impl Default for Settings {
@@ -65,6 +72,7 @@ impl Default for Settings {
             animate_nav_transitions: default_animate_nav_transitions(),
             max_media_distance: DEFAULT_MAX_MEDIA_DISTANCE,
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
+            use_negentropy: DEFAULT_USE_NEGENTROPY,
         }
     }
 }
@@ -224,6 +232,11 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    pub fn set_use_negentropy(&mut self, value: bool) {
+        self.get_settings_mut().use_negentropy = value;
+        self.try_save_settings();
+    }
+
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),
@@ -296,5 +309,12 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.max_hashtags_per_note)
             .unwrap_or(DEFAULT_MAX_HASHTAGS_PER_NOTE)
+    }
+
+    pub fn use_negentropy(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.use_negentropy)
+            .unwrap_or(DEFAULT_USE_NEGENTROPY)
     }
 }

@@ -660,6 +660,9 @@ impl Notedeck {
             }
         }
 
+        // Apply negentropy setting from user preferences
+        pool.set_use_negentropy(settings.use_negentropy());
+
         let mut unknown_ids = UnknownIds::default();
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
