@@ -120,7 +120,21 @@ pub fn setup_multicast_relay(
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
     let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
 
-    let mut socket = UdpSocket::bind(address)?;
+    // Create socket with SO_REUSEADDR for multiple instances
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket2.set_reuse_address(true)?;
+
+    // SO_REUSEPORT for Unix (allows multiple binds to same port)
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    socket2.set_reuse_port(true)?;
+
+    socket2.bind(&address.into())?;
+    socket2.set_nonblocking(true)?;
+
+    let std_socket: std::net::UdpSocket = socket2.into();
+    let mut socket = UdpSocket::from_std(std_socket);
     let interface = Ipv4Addr::UNSPECIFIED;
     let multicast_address = SocketAddrV4::new(multicast_ip, port);
 

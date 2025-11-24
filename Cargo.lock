@@ -1981,12 +1981,15 @@ dependencies = [
  "nostr 0.37.0",
  "nostrdb",
  "parking_lot",
+ "rand 0.9.2",
  "sdp",
  "serde",
  "serde_derive",
  "serde_json",
  "sha2",
+ "socket2 0.6.1",
  "stun",
+ "tempfile",
  "thiserror 2.0.17",
  "tokenator",
  "tokio",
@@ -4077,7 +4080,6 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.8.0"
-source = "git+https://github.com/mmalmi/nostrdb-rs#30e855e8b64f5040a1a35f2321ec5b1acc1faa4e"
 dependencies = [
  "bindgen",
  "cc",

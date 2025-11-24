@@ -47,7 +47,8 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/mmalmi/nostrdb-rs" }
+nostrdb = { path = "../nostrdb-rs" }
+#nostrdb = { git = "https://github.com/mmalmi/nostrdb-rs" }
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
@@ -58,6 +59,7 @@ notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
 once_cell = "1.19.0"
+socket2 = "0.6"
 robius-open = "0.1"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }

@@ -20,6 +20,7 @@ url = { workspace = true }
 mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
+socket2 = { workspace = true }
 hashbrown = { workspace = true }
 bytes = "1.10"
 uuid = { workspace = true }
@@ -35,3 +36,7 @@ sdp = { workspace = true }
 webrtc-util = { workspace = true }
 interceptor = { workspace = true }
 parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"
+rand = { workspace = true }

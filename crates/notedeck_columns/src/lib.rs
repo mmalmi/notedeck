@@ -32,7 +32,7 @@ mod toolbar;
 pub mod ui;
 mod unknowns;
 mod view_state;
-mod webrtc_coordinator;
+pub mod webrtc_coordinator;
 
 #[cfg(test)]
 #[macro_use]
@@ -43,5 +43,6 @@ pub mod storage;
 pub use app::Damus;
 pub use error::Error;
 pub use route::{Route, SettingsRoute};
+pub use webrtc_coordinator::WebRTCCoordinator;
 
 pub type Result<T> = std::result::Result<T, error::Error>;
