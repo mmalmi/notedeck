@@ -37,7 +37,7 @@ impl TestInstance {
         let ndb = Ndb::new(db_path.to_str().unwrap(), &config)?;
 
         let peer_conn = Arc::new(RwLock::new(
-            PeerConnection::new(peer_pubkey, signaling_tx).await?
+            PeerConnection::new(peer_pubkey, format!("{}_peer_id", name), signaling_tx).await?
         ));
 
         println!("[{}] Created with db at {:?}", name, db_path);
@@ -192,18 +192,14 @@ async fn test_negentropy_over_webrtc() -> Result<(), Box<dyn std::error::Error>>
     let mut ice_b_to_a = Vec::new();
 
     while let Ok(msg) = rx_a.try_recv() {
-        if let enostr::SignalingType::Candidate { candidate } = msg.msg_type {
-            if let Some(cand) = candidate {
-                ice_a_to_b.push(cand);
-            }
+        if let enostr::SignalingMessage::Candidate { candidate, .. } = msg {
+            ice_a_to_b.push(candidate);
         }
     }
 
     while let Ok(msg) = rx_b.try_recv() {
-        if let enostr::SignalingType::Candidate { candidate } = msg.msg_type {
-            if let Some(cand) = candidate {
-                ice_b_to_a.push(cand);
-            }
+        if let enostr::SignalingMessage::Candidate { candidate, .. } = msg {
+            ice_b_to_a.push(candidate);
         }
     }
 

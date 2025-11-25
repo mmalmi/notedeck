@@ -24,7 +24,7 @@ pub use relay::pool::{NegentropyEvent, PoolEvent, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
 pub use relay::webrtc::{
     HeartbeatManager, MutualFollowDetector, OnlineStatus, PeerConnection,
-    PeerConnectionManager, SignalingMessage, SignalingType, StunServer, WebRTCRelay,
+    PeerConnectionManager, SignalingMessage, StunServer, WebRTCRelay,
 };
 pub use relay::{Relay, RelayStatus};
 

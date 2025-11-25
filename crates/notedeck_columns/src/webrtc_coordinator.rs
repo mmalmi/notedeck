@@ -79,7 +79,7 @@ impl WebRTCCoordinator {
         let outgoing_forwarder_tx = outgoing_tx.clone();
         tokio::spawn(async move {
             while let Some((peer_pubkey, message)) = outgoing_mpsc_rx.recv().await {
-                info!("Forwarding outgoing signaling for peer {}: {:?}", peer_pubkey, message.msg_type);
+                info!("Forwarding outgoing signaling for peer {}: {:?}", peer_pubkey, message);
                 if let Err(e) = outgoing_forwarder_tx.send(OutgoingSignalingEvent {
                     peer_pubkey: peer_pubkey.clone(),
                     message,
@@ -99,7 +99,7 @@ impl WebRTCCoordinator {
 
             // Check for incoming signaling events (non-blocking)
             if let Ok(event) = incoming_rx.try_recv() {
-                info!("Processing incoming signaling from peer {}: {:?}", event.peer_pubkey, event.message.msg_type);
+                info!("Processing incoming signaling from peer {}: {:?}", event.peer_pubkey, event.message);
                 let mut manager = peer_manager.write().await;
                 if let Err(e) = manager
                     .handle_signaling(&event.peer_pubkey, event.message, outgoing_mpsc_tx.clone())

@@ -278,15 +278,11 @@ impl<'a> ChatView<'a> {
                             .desired_width(ui.available_width())
                             .frame(false)
                     );
-                    if resp.changed() {
-                        eprintln!("💡 Input changed! New text: '{}'", input_text);
-                    }
                     resp
                 }).inner
                     }).inner;
 
                 if focus_state == crate::ui::search::FocusState::ShouldRequestFocus {
-                    eprintln!("🔍 Requesting focus for input");
                     text_resp.request_focus();
                     focus_state = crate::ui::search::FocusState::RequestedFocus;
                 } else if focus_state == crate::ui::search::FocusState::RequestedFocus {

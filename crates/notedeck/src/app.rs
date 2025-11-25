@@ -179,7 +179,7 @@ pub fn publish_webrtc_signaling<'a>(
     recipient_pubkey: Option<&[u8; 32]>,
 ) -> Result<(), String> {
     use uuid::Uuid;
-    use enostr::SignalingType;
+    use enostr::SignalingMessage;
 
     // Serialize message to JSON
     let plaintext_content = message.to_json().map_err(|e| format!("Failed to serialize message: {}", e))?;
@@ -189,10 +189,10 @@ pub fn publish_webrtc_signaling<'a>(
     // Determine if encryption is needed
     // Hello messages are always plaintext (broadcast)
     // Signaling messages (offer/answer/candidate) are encrypted with NIP-44
-    let should_encrypt = matches!(message.msg_type,
-        SignalingType::Offer { .. } |
-        SignalingType::Answer { .. } |
-        SignalingType::Candidate { .. }
+    let should_encrypt = matches!(message,
+        SignalingMessage::Offer { .. } |
+        SignalingMessage::Answer { .. } |
+        SignalingMessage::Candidate { .. }
     );
 
     // Encrypt content if needed
@@ -252,7 +252,7 @@ pub fn publish_webrtc_signaling<'a>(
         .map_err(|e| format!("Failed to create client message: {}", e))?;
     pool.send(&msg);
 
-    info!("Published WebRTC signaling message: {:?}", message.msg_type);
+    info!("Published WebRTC signaling message: {:?}", message);
     Ok(())
 }
 

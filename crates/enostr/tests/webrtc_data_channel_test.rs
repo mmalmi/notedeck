@@ -6,7 +6,7 @@
 /// - Data channel establishment
 /// - Send/receive test data
 /// - No shortcuts - uses real webrtc crate
-use enostr::{PeerConnection, SignalingMessage, SignalingType};
+use enostr::{PeerConnection, SignalingMessage};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -46,10 +46,10 @@ async fn test_webrtc_data_channel_real() -> Result<(), Box<dyn std::error::Error
     // Create peer connections
     println!("=== Creating peer connections ===");
     let peer_a = Arc::new(RwLock::new(
-        PeerConnection::new("peer_b_pubkey".to_string(), tx_a).await?
+        PeerConnection::new("peer_b_pubkey".to_string(), "peer_a_id".to_string(), tx_a).await?
     ));
     let peer_b = Arc::new(RwLock::new(
-        PeerConnection::new("peer_a_pubkey".to_string(), tx_b).await?
+        PeerConnection::new("peer_a_pubkey".to_string(), "peer_b_id".to_string(), tx_b).await?
     ));
 
     println!("Peer A created");
@@ -94,20 +94,16 @@ async fn test_webrtc_data_channel_real() -> Result<(), Box<dyn std::error::Error
 
     // Collect ICE candidates from both peers
     while let Ok(msg) = rx_a.try_recv() {
-        if let SignalingType::Candidate { candidate } = msg.msg_type {
-            if let Some(cand_value) = candidate {
-                println!("Peer A → B: ICE candidate");
-                ice_a_to_b.push(cand_value);
-            }
+        if let SignalingMessage::Candidate { candidate, .. } = msg {
+            println!("Peer A → B: ICE candidate");
+            ice_a_to_b.push(candidate);
         }
     }
 
     while let Ok(msg) = rx_b.try_recv() {
-        if let SignalingType::Candidate { candidate } = msg.msg_type {
-            if let Some(cand_value) = candidate {
-                println!("Peer B → A: ICE candidate");
-                ice_b_to_a.push(cand_value);
-            }
+        if let SignalingMessage::Candidate { candidate, .. } = msg {
+            println!("Peer B → A: ICE candidate");
+            ice_b_to_a.push(candidate);
         }
     }
 

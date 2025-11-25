@@ -363,7 +363,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                     } else {
                         debug!(
                             "Published outgoing WebRTC signaling to {}: {:?}",
-                            outgoing.peer_pubkey, outgoing.message.msg_type
+                            outgoing.peer_pubkey, outgoing.message
                         );
                     }
                 }
@@ -547,7 +547,7 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                         if let Some(plaintext) = decrypted_content {
                             info!("Attempting to parse signaling message from plaintext");
                             if let Ok(message) = enostr::SignalingMessage::from_json(&plaintext) {
-                                info!("Parsed WebRTC signaling message: {:?}", message.msg_type);
+                                info!("Parsed WebRTC signaling message: {:?}", message);
                                 // Route to WebRTC coordinator for async processing
                                 damus.webrtc_coordinator.process_signaling(sender_pubkey_hex.clone(), message);
                             } else {
