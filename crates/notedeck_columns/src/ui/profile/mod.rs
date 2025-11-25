@@ -1,6 +1,8 @@
+pub mod contacts_list;
 pub mod edit;
 pub mod contacts_list;
 
+pub use contacts_list::{ContactsListAction, ContactsListView};
 pub use edit::EditProfileView;
 pub use contacts_list::{ContactsListView, ContactsListAction};
 use egui::{vec2, Color32, CornerRadius, Layout, Rect, RichText, ScrollArea, Sense, Stroke};
@@ -268,6 +270,12 @@ fn profile_body(
                 action = Some(stats_action);
             }
 
+            ui.add_space(8.0);
+
+            if let Some(stats_action) = profile_stats(ui, pubkey, note_context, txn) {
+                action = Some(stats_action);
+            }
+
             ui.horizontal_wrapped(|ui| {
                 let website_url = profile
                     .as_ref()
@@ -375,22 +383,22 @@ fn profile_stats(
         }
 
         let selected = note_context.accounts.get_selected_account();
-        if &selected.key.pubkey != pubkey {
-            if selected.is_following(pubkey.bytes()) == notedeck::IsFollowing::Yes {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(tr!(
-                        note_context.i18n,
-                        "Follows you",
-                        "Badge indicating user follows you"
-                    ))
-                    .size(notedeck::fonts::get_font_size(
-                        ui.ctx(),
-                        &NotedeckTextStyle::Tiny,
-                    ))
-                    .color(ui.visuals().weak_text_color()),
-                );
-            }
+        if &selected.key.pubkey != pubkey
+            && selected.is_following(pubkey.bytes()) == notedeck::IsFollowing::Yes
+        {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(tr!(
+                    note_context.i18n,
+                    "Follows you",
+                    "Badge indicating user follows you"
+                ))
+                .size(notedeck::fonts::get_font_size(
+                    ui.ctx(),
+                    &NotedeckTextStyle::Tiny,
+                ))
+                .color(ui.visuals().weak_text_color()),
+            );
         }
     });
 

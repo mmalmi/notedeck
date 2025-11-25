@@ -68,7 +68,9 @@ impl<'a> NavTitle<'a> {
 
             let interact_rect = child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
             if interact_rect.drag_started_by(egui::PointerButton::Primary) {
-                child_ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                child_ui
+                    .ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
 
             let click_rect = child_ui.interact(rect, child_ui.id().with("click"), Sense::click());

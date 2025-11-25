@@ -329,6 +329,11 @@ fn process_nav_resp(
             NavAction::Returning(_) => {}
             NavAction::Resetting => {}
             NavAction::Navigating => {
+                // since we are navigating, we should set this column as
+                // the selected one
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .select_column(col as i32);
+
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
                 handle_navigating_timeline(
                     ctx.ndb,
@@ -436,7 +441,7 @@ fn go_back(stack: &mut Router<Route>, sheet: &mut SingletonRouter<Route>) {
 }
 
 impl RouterAction {
-    pub fn process(
+    pub fn process_router_action(
         self,
         stack_router: &mut Router<Route>,
         sheet_router: &mut SingletonRouter<Route>,
@@ -609,7 +614,7 @@ fn process_render_nav_action(
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process(router, sheet_router)
+        action.process_router_action(router, sheet_router)
     } else {
         None
     }

@@ -502,7 +502,7 @@ fn chrome_handle_app_action(
             if let Some(action) = m_action {
                 let col = cols.selected_mut();
 
-                action.process(&mut col.router, &mut col.sheet_router);
+                action.process_router_action(&mut col.router, &mut col.sheet_router);
             }
         }
     }
@@ -558,7 +558,7 @@ fn columns_route_to_profile(
     if let Some(action) = m_action {
         let col = cols.selected_mut();
 
-        action.process(&mut col.router, &mut col.sheet_router);
+        action.process_router_action(&mut col.router, &mut col.sheet_router);
     }
 }
 

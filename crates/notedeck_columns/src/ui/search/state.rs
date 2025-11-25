@@ -33,6 +33,7 @@ pub enum FocusState {
     ShouldRequestFocus,
 
     /// We already focused, we don't need to do that again
+    #[default]
     RequestedFocus,
 }
 

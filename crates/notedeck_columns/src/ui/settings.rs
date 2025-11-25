@@ -6,10 +6,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
-    tr,
-    ui::richtext_small,
-    Images, JobsCache, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle, Settings,
-    SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
+    tr, ui::richtext_small, Images, JobsCache, LanguageIdentifier, Localization, NoteContext,
+    NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
+    DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{connected_image, copy_to_clipboard_dark_image, copy_to_clipboard_image, key_image, settings_dark_image, settings_light_image},
@@ -309,7 +308,9 @@ impl<'a> SettingsView<'a> {
                 if let Ok(preview_note) = self.note_context.ndb.get_note_by_id(&txn, note_id.bytes()) {
                     ui.add_space(8.0);
                     notedeck_ui::padding(8.0, ui, |ui| {
-                        ui.set_max_width(ui.available_width());
+                        if notedeck::ui::is_narrow(ui.ctx()) {
+                            ui.set_max_width(ui.available_width());
+                        }
 
                         NoteView::new(
                             self.note_context,

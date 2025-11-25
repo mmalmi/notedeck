@@ -109,11 +109,11 @@ fn handle_egui_events(
                 // Browser-like navigation: Cmd+Arrow (macOS) / Ctrl+Arrow (others)
                 if (modifiers.ctrl || modifiers.command) && !modifiers.shift && !modifiers.alt {
                     match key {
-                        egui::Key::ArrowLeft => {
+                        egui::Key::ArrowLeft | egui::Key::H => {
                             columns.get_selected_router().go_back();
                             continue;
                         }
-                        egui::Key::ArrowRight => {
+                        egui::Key::ArrowRight | egui::Key::L => {
                             columns.get_selected_router().go_forward();
                             continue;
                         }
@@ -1293,6 +1293,16 @@ fn timelines_view(
                             ui.ctx(),
                         );
                     }
+                }
+
+                ProcessNavResult::SwitchAccount(pubkey) => {
+                    // Add as pubkey-only account if not already present
+                    let kp = enostr::Keypair::only_pubkey(*pubkey);
+                    let _ = ctx.accounts.add_account(kp);
+
+                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+                    ctx.accounts
+                        .select_account(pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
                 }
             }
         }

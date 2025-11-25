@@ -1,7 +1,12 @@
 use egui::text::LayoutJob;
 use poll_promise::Promise;
 
-use crate::{media_upload::Nip94Event, post::PostBuffer, ui::{note::PostType, search::FocusState}, Error};
+use crate::{
+    media_upload::Nip94Event,
+    post::PostBuffer,
+    ui::{note::PostType, search::FocusState},
+    Error,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
