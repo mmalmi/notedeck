@@ -476,7 +476,7 @@ fn handle_eose(
 
 fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
-        RelayMessage::Event(_subid, ev) => {
+        RelayMessage::Event(subid, ev) => {
             info!("Processing event from {}", relay);
 
             // Use ev directly (it's already the event JSON string)
@@ -562,8 +562,21 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                         info!("No decrypted content available");
                     }
                 }
-                // Note: DM events (1059, 1060, 30078) are routed to SessionManager
-                // via session_subscriptions check in notedeck/src/app.rs
+
+                // Route session events (non-webrtc 30078, 1059, 1060) to SessionManager
+                // Check if this event came from a Session subscription
+                let is_session_sub = damus.subscriptions.subs.get(&subid.to_string())
+                    .map(|k| matches!(k, crate::subscriptions::SubKind::Session))
+                    .unwrap_or(false);
+
+                if is_session_sub && !is_webrtc {
+                    info!("Routing event kind {} to SessionManager", kind);
+                    if let Some(tx) = ctx.session_event_tx {
+                        let _ = tx.send(
+                            nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(event.clone())
+                        );
+                    }
+                }
             } else {
                 error!("DEBUG: Failed to parse event JSON from {}", relay);
             }

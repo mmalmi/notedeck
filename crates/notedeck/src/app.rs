@@ -452,78 +452,10 @@ impl eframe::App for Notedeck {
             }
         }
 
-        // Process relay events through EventBroker
-        loop {
-            let pool_event = if let Some(ev) = self.pool.try_recv() {
-                ev.into_owned()
-            } else {
-                break;
-            };
-
-            // Handle negentropy events
-            if let Some(neg_event) = &pool_event.negentropy_event {
-                use enostr::NegentropyEvent;
-                match neg_event {
-                    NegentropyEvent::NeedLocalEvents { relay_url, sub_id, filter } => {
-                        tracing::debug!("Negentropy NeedLocalEvents for {} on {}", sub_id, relay_url);
-                        // Query local nostrdb for (timestamp, id) pairs
-                        if let Ok(txn) = nostrdb::Transaction::new(&self.ndb) {
-                            let events: Vec<(u64, [u8; 32])> = match self.ndb.query(&txn, &[filter.clone()], 1000) {
-                                Ok(results) => results.iter().map(|r| {
-                                    (r.note.created_at(), *r.note.id())
-                                }).collect(),
-                                Err(_) => vec![],
-                            };
-                            tracing::debug!("Providing {} local events for negentropy sync", events.len());
-                            if let Err(e) = self.pool.add_negentropy_events(relay_url, sub_id, filter.clone(), &events) {
-                                tracing::warn!("Failed to add negentropy events: {}", e);
-                            }
-                        }
-                    }
-                    NegentropyEvent::NeedEvents { relay_url, sub_id, event_ids } => {
-                        tracing::info!("Negentropy NeedEvents: {} IDs for {} on {}", event_ids.len(), sub_id, relay_url);
-                        // Fetch events from relay
-                        if !event_ids.is_empty() {
-                            let id_bytes: Vec<[u8; 32]> = event_ids.iter().filter_map(|hex_id| {
-                                let mut bytes = [0u8; 32];
-                                hex::decode_to_slice(hex_id, &mut bytes).ok().map(|_| bytes)
-                            }).collect();
-                            let fetch_filter = nostrdb::Filter::new().ids(id_bytes.iter()).build();
-                            let fetch_msg = enostr::ClientMessage::req(format!("{}-fetch", sub_id), vec![fetch_filter]);
-                            self.pool.send(&fetch_msg);
-                        }
-                    }
-                    NegentropyEvent::HaveEvents { event_ids, .. } => {
-                        tracing::debug!("Negentropy: we have {} events relay doesn't", event_ids.len());
-                    }
-                    NegentropyEvent::SyncComplete { sub_id, .. } => {
-                        tracing::info!("Negentropy sync complete for {}", sub_id);
-                    }
-                    NegentropyEvent::Error { sub_id, error, .. } => {
-                        tracing::warn!("Negentropy error for {}: {}", sub_id, error);
-                    }
-                }
-            }
-
-            use enostr::RelayEvent;
-            match (&pool_event.event).into() {
-                RelayEvent::Opened => {
-                    tracing::info!("Relay opened: {}", pool_event.relay);
-                }
-                RelayEvent::Closed => {
-                    tracing::warn!("{} connection closed", pool_event.relay);
-                }
-                RelayEvent::Error(e) => {
-                    tracing::error!("{}: {}", pool_event.relay, e);
-                }
-                RelayEvent::Other(_msg) => {
-                    // Ignore other events
-                }
-                RelayEvent::Message(msg) => {
-                    self.process_relay_message(&pool_event.relay, &msg);
-                }
-            }
-        }
+        // NOTE: Relay events are processed in notedeck_columns::app.rs
+        // to avoid duplicate consumption from the pool channel.
+        // Session events from session_subscriptions are routed to SessionManager
+        // via process_relay_message which is called from notedeck_columns.
 
         render_notedeck(self, ctx);
 
@@ -905,87 +837,8 @@ impl Notedeck {
         }
     }
 
-    fn process_relay_message(&mut self, relay: &str, msg: &enostr::RelayMessage) {
-        use enostr::RelayMessage;
-        use nostr::JsonUtil;
-
-        match msg {
-            RelayMessage::Event(subid, ev) => {
-                // Validate event can be parsed before processing
-                let event = match nostr::Event::from_json(ev) {
-                    Ok(e) => e,
-                    Err(_) => return,
-                };
-
-                // Route events from session subscriptions directly to SessionManager
-                if self.session_subscriptions.contains(&subid.to_string()) {
-                    tracing::debug!("Routing event kind {} from session subscription {} to SessionManager", event.kind.as_u16(), subid);
-                    if let Some(tx) = &self.session_event_tx {
-                        let _ = tx.send(
-                            nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(event.clone())
-                        );
-                    }
-                }
-
-
-                // Process event into nostrdb
-                let relay_obj = if let Some(r) = self.pool.relays.iter().find(|r| r.url() == relay) {
-                    r
-                } else {
-                    tracing::error!("couldn't find relay {} for note processing", relay);
-                    return;
-                };
-
-                match relay_obj {
-                    enostr::PoolRelay::Websocket(_) => {
-                        if let Err(err) = self.ndb.process_event_with(
-                            ev,
-                            nostrdb::IngestMetadata::new()
-                                .client(false)
-                                .relay(relay),
-                        ) {
-                            tracing::error!("error processing event {}: {}", ev, err);
-                        }
-                    }
-                    enostr::PoolRelay::Multicast(_) | enostr::PoolRelay::WebRTC(_) => {
-                        if let Err(err) = self.ndb.process_event_with(
-                            ev,
-                            nostrdb::IngestMetadata::new()
-                                .client(true)
-                                .relay(relay),
-                        ) {
-                            tracing::error!("error processing client event {}: {}", ev, err);
-                        }
-                    }
-                }
-            }
-            RelayMessage::Notice(msg) => {
-                let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("neg-") || msg_lower.contains("negentropy") {
-                    tracing::warn!("Notice from {}: {} (relay may not support negentropy)", relay, msg);
-                    self.pool.mark_negentropy_unsupported(relay);
-                } else {
-                    tracing::warn!("Notice from {}: {}", relay, msg);
-                }
-            }
-            RelayMessage::OK(cr) => {
-                tracing::info!("OK from {}: {:?}", relay, cr);
-            }
-            RelayMessage::Eose(subid) => {
-                tracing::trace!("EOSE from {} for subscription {}", relay, subid);
-                // Check if this is a session subscription
-                if self.session_subscriptions.contains(&subid.to_string()) {
-                    tracing::trace!("EOSE for session subscription: {}", subid);
-                }
-            }
-            RelayMessage::NegMsg(subid, payload) => {
-                tracing::trace!("NegMsg from {} for subscription {}: {} bytes", relay, subid, payload.len());
-            }
-            RelayMessage::NegErr(subid, error) => {
-                tracing::warn!("NegErr from {} for subscription {}: {}", relay, subid, error);
-            }
-        }
-    }
+    // NOTE: Relay message processing moved to notedeck_columns::app.rs process_message()
+    // to avoid duplicate event consumption from pool.try_recv()
 
     pub fn set_app<T: App + 'static>(&mut self, app: T) {
         self.app = Some(Rc::new(RefCell::new(app)));
