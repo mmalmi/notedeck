@@ -9,6 +9,7 @@ pub const CHAT_MESSAGE_KIND: u32 = 14;
 pub const MAX_SKIP: usize = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Header {
     pub number: u32,
     pub previous_chain_length: u32,

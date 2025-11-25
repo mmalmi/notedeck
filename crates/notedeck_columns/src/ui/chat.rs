@@ -34,7 +34,6 @@ impl<'a> ChatView<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        eprintln!("💬 ChatView.ui() called for chat_id: {}", &self.chat_id);
         ui.vertical(|ui| {
             self.render_header(ui);
 
@@ -117,9 +116,7 @@ impl<'a> ChatView<'a> {
                 },
             );
 
-            eprintln!("📝 About to call render_input");
             self.render_input(ui);
-            eprintln!("📝 render_input completed");
         });
     }
 
@@ -295,8 +292,6 @@ impl<'a> ChatView<'a> {
                 } else if focus_state == crate::ui::search::FocusState::RequestedFocus {
                     focus_state = crate::ui::search::FocusState::Navigating;
                 }
-
-                eprintln!("🔍 Input has_focus: {}, focus_state: {:?}", text_resp.has_focus(), focus_state);
 
                 ui.ctx().data_mut(|d| d.insert_temp(focus_id, focus_state));
 

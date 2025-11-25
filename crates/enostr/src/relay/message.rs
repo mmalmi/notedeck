@@ -197,20 +197,37 @@ impl<'a> RelayMessage<'a> {
         }
 
         // OK (NIP-20)
-        // Relay response format: ["OK",<event_id>, <true|false>, <message>]
-        if &msg[0..=5] == "[\"OK\"," && msg.len() >= 78 {
-            let event_id = &msg[7..71];
-            let booly = &msg[73..77];
-            let status: bool = if booly == "true" {
-                true
-            } else if booly == "false" {
-                false
-            } else {
-                return Err(Error::DecodeFailed("bad boolean value".into()));
-            };
-            let message_start = msg.rfind(',').unwrap() + 1;
-            let message = &msg[message_start..msg.len() - 2].trim().trim_matches('"');
-            return Ok(Self::ok(event_id, status, message));
+        // Relay response format: ["OK", <event_id>, <true|false>, <message>]
+        // Handle both compact ["OK","id",true,""] and spaced ["OK", "id", true, ""] formats
+        if msg.starts_with("[\"OK\"") {
+            // Skip ["OK" then find the event_id which is a 64 char hex in quotes
+            // Find second quote pair (first is "OK")
+            let after_ok = &msg[5..]; // Skip [\"OK\"
+            if let Some(comma_pos) = after_ok.find(',') {
+                let after_comma = &after_ok[comma_pos+1..].trim_start();
+                // Now find the event_id in quotes
+                if after_comma.starts_with('"') {
+                    if let Some(end_quote) = after_comma[1..].find('"') {
+                        let event_id = &after_comma[1..end_quote+1];
+
+                        // Find boolean after the event_id
+                        let after_id = &after_comma[end_quote+2..];
+                        let status = if after_id.contains("true") {
+                            true
+                        } else if after_id.contains("false") {
+                            false
+                        } else {
+                            return Err(Error::DecodeFailed("bad boolean value".into()));
+                        };
+
+                        // Extract message (last quoted string)
+                        let message_start = msg.rfind(',').unwrap() + 1;
+                        let message = &msg[message_start..msg.len() - 1].trim().trim_matches(']').trim().trim_matches('"');
+                        return Ok(Self::ok(event_id, status, message));
+                    }
+                }
+            }
+            return Err(Error::DecodeFailed("malformed OK message".into()));
         }
 
         Err(Error::DecodeFailed(format!(
@@ -268,6 +285,23 @@ mod tests {
                     "pow: difficulty 25>=24",
                 )),
             ),
+            // Spaced format (like nostr.wine sends)
+            (
+                r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", true, ""]"#,
+                Ok(RelayMessage::ok(
+                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
+                    true,
+                    "",
+                )),
+            ),
+            (
+                r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", false, "duplicate:"]"#,
+                Ok(RelayMessage::ok(
+                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
+                    false,
+                    "duplicate:",
+                )),
+            ),
             // Invalid cases
             (
                 r#"["EVENT","random_string"]"#,
@@ -287,11 +321,11 @@ mod tests {
             ),
             (
                 r#"["OK","event_id"]"#,
-                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"event_id\"]'".into())),
+                Err(Error::DecodeFailed("bad boolean value".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#,
-                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30\"]'".into())),
+                Err(Error::DecodeFailed("bad boolean value".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#,
