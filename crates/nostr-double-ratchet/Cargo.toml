@@ -30,3 +30,4 @@ tempfile = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+chrono = { workspace = true }

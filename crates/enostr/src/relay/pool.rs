@@ -38,6 +38,25 @@ fn should_use_negentropy(filter: &Filter) -> bool {
         return false;
     }
 
+    // Skip DM-related kinds that need real-time delivery (not historical sync)
+    // Kind 1059: Gift wrap (encrypted DM wrapper)
+    // Kind 1060: Encrypted message
+    // Kind 30078: App data (used for DM invites)
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
+        if let Some(kinds) = parsed.get("kinds").and_then(|k| k.as_array()) {
+            let has_dm_kind = kinds.iter().any(|k| {
+                if let Some(kind) = k.as_u64() {
+                    kind == 1059 || kind == 1060 || kind == 30078
+                } else {
+                    false
+                }
+            });
+            if has_dm_kind {
+                return false;
+            }
+        }
+    }
+
     // Check for single author
     let has_single_author = json.contains("\"authors\"") && json.matches("\"authors\"").count() == 1;
 
