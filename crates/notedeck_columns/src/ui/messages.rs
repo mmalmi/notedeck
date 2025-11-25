@@ -2,6 +2,7 @@ use egui::{Label, RichText, Stroke, Vec2};
 use notedeck::theme::PURPLE;
 use notedeck_ui::ProfilePic;
 use nostr_double_ratchet::SessionManager;
+use std::collections::HashSet;
 use std::sync::Arc;
 use nostrdb::{Ndb, Transaction};
 
@@ -11,6 +12,8 @@ pub struct MessagesView<'a> {
     session_manager: &'a Option<Arc<SessionManager>>,
     chat_messages: &'a notedeck::ChatMessages,
     account_pubkey: &'a [u8; 32],
+    /// Set of online peer pubkeys (hex)
+    online_peers: HashSet<String>,
 }
 
 impl<'a> MessagesView<'a> {
@@ -21,6 +24,7 @@ impl<'a> MessagesView<'a> {
         session_manager: &'a Option<Arc<SessionManager>>,
         chat_messages: &'a notedeck::ChatMessages,
         account_pubkey: &'a [u8; 32],
+        online_peers: Vec<String>,
     ) -> Self {
         Self {
             img_cache,
@@ -28,6 +32,7 @@ impl<'a> MessagesView<'a> {
             session_manager,
             chat_messages,
             account_pubkey,
+            online_peers: online_peers.into_iter().collect(),
         }
     }
 
@@ -96,6 +101,8 @@ impl<'a> MessagesView<'a> {
                     })
                     .unwrap_or_else(|| ("No messages yet".to_string(), String::new(), 0));
 
+                let online = self.online_peers.contains(&pubkey_hex);
+
                 Conversation {
                     pubkey: pubkey_hex,
                     display_name,
@@ -104,6 +111,7 @@ impl<'a> MessagesView<'a> {
                     timestamp: timestamp_str,
                     timestamp_secs,
                     unread: false,
+                    online,
                 }
             })
             .collect();
@@ -163,7 +171,8 @@ impl<'a> MessagesView<'a> {
             );
 
             ui.put(pfp_rect, &mut ProfilePic::new(self.img_cache, &conversation.profile_pic)
-                .size(pfp_size));
+                .size(pfp_size)
+                .online(conversation.online));
 
             let text_left = pfp_rect.right() + 12.0;
             let text_rect = egui::Rect::from_min_max(
@@ -296,5 +305,6 @@ struct Conversation {
     timestamp: String,
     timestamp_secs: u64,
     unread: bool,
+    online: bool,
 }
 

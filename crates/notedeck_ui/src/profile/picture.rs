@@ -22,6 +22,8 @@ pub struct ProfilePic<'cache, 'url> {
     accounts: Option<&'url Accounts>,
     ndb: Option<&'url Ndb>,
     txn: Option<&'url Transaction>,
+    /// Show online indicator dot (green circle at bottom-left)
+    online: bool,
 }
 
 impl egui::Widget for &mut ProfilePic<'_, '_> {
@@ -51,6 +53,27 @@ impl egui::Widget for &mut ProfilePic<'_, '_> {
             }
         }
 
+        // Draw online indicator (green dot at bottom-left, like iris-client)
+        if self.online {
+            let rect = inner.response.rect;
+            let indicator_size = (self.size * 0.25).max(8.0).min(12.0);
+            let border_width = 2.0;
+            let indicator_pos = rect.left_bottom() + egui::vec2(indicator_size / 2.0, -indicator_size / 2.0);
+
+            // Draw border (background color)
+            ui.painter().circle_filled(
+                indicator_pos,
+                indicator_size / 2.0 + border_width,
+                ui.visuals().panel_fill,
+            );
+            // Draw green indicator
+            ui.painter().circle_filled(
+                indicator_pos,
+                indicator_size / 2.0,
+                egui::Color32::from_rgb(34, 197, 94), // Green (similar to Tailwind's green-500)
+            );
+        }
+
         inner.response
     }
 }
@@ -72,7 +95,15 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
             accounts: None,
             ndb: None,
             txn: None,
+            online: false,
         }
+    }
+
+    /// Set whether to show the online indicator
+    #[inline]
+    pub fn online(mut self, online: bool) -> Self {
+        self.online = online;
+        self
     }
 
     pub fn with_follow_check(

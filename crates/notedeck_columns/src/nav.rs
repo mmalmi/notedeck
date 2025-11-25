@@ -1115,6 +1115,7 @@ fn render_nav_body(
 
             let scroll_resp = ScrollArea::vertical().show(ui, |ui| {
                 let account_pubkey = note_context.accounts.get_selected_account().key.pubkey.bytes();
+                let online_peers = note_context.pool.webrtc_online_peers();
                 crate::ui::MessagesView::new(
                     note_context.i18n,
                     note_context.img_cache,
@@ -1122,6 +1123,7 @@ fn render_nav_body(
                     note_context.session_manager,
                     note_context.chat_messages,
                     account_pubkey,
+                    online_peers,
                 )
                 .ui(ui)
             });
