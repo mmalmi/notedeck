@@ -35,7 +35,6 @@ pub struct AppContext<'a> {
     pub session_event_tx: &'a Option<crossbeam_channel::Sender<SessionManagerEvent>>,
     pub chat_messages: &'a crate::app::ChatMessages,
     pub subscriptions: Option<&'a mut std::collections::HashMap<String, ()>>,
-    pub event_broker: &'a mut crate::event_broker::EventBroker,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

@@ -336,13 +336,14 @@ impl<'a> RelayView<'a> {
             // Get profile from nostrdb
             let profile = self.ndb.get_profile_by_pubkey(txn, pubkey).ok();
 
-            // Profile picture (32px)
+            // Profile picture (32px) with online indicator
             ui.add(
                 &mut ProfilePic::from_profile_or_default(
                     self.img_cache,
                     profile.as_ref()
                 )
                 .size(32.0)
+                .online(is_online)
             );
 
             ui.add_space(8.0);
@@ -357,17 +358,6 @@ impl<'a> RelayView<'a> {
                 RichText::new(name)
                     .text_style(NotedeckTextStyle::Body.text_style())
             );
-
-            // Online indicator
-            if is_online {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("●")
-                            .color(egui::Color32::from_rgb(0x00, 0xFF, 0x00))
-                            .text_style(NotedeckTextStyle::Body.text_style())
-                    );
-                });
-            }
         });
 
         ui.add_space(4.0);

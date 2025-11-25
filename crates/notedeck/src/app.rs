@@ -306,7 +306,6 @@ pub struct Notedeck {
     chat_messages: ChatMessages,
     session_subscriptions: HashSet<String>,
     test_dm_sent: bool,
-    event_broker: crate::event_broker::EventBroker,
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -743,13 +742,6 @@ impl Notedeck {
         let loaded_messages = load_chat_messages(&path, &Pubkey::new(pk_bytes));
         let chat_messages = Arc::new(Mutex::new(loaded_messages));
 
-        // Initialize EventBroker
-        let mut event_broker = crate::event_broker::EventBroker::new();
-        // SessionManagerHandler will be created in notedeck_columns when ready
-        // For now, register it for kinds 1059, 1060, 30078
-        let session_handler = crate::event_broker::SessionManagerHandler::new(session_event_tx.clone());
-        event_broker.subscribe_events("SessionManager", vec![1059, 1060, 30078], session_handler);
-
         Self {
             ndb,
             img_cache,
@@ -775,7 +767,6 @@ impl Notedeck {
             chat_messages,
             session_subscriptions: HashSet::new(),
             test_dm_sent: false,
-            event_broker,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -909,7 +900,6 @@ impl Notedeck {
             session_event_tx: &self.session_event_tx,
             chat_messages: &self.chat_messages,
             subscriptions: None,
-            event_broker: &mut self.event_broker,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
@@ -920,15 +910,23 @@ impl Notedeck {
         use nostr::JsonUtil;
 
         match msg {
-            RelayMessage::Event(_subid, ev) => {
+            RelayMessage::Event(subid, ev) => {
                 // Validate event can be parsed before processing
-                if nostr::Event::from_json(ev).is_err() {
-                    return;
+                let event = match nostr::Event::from_json(ev) {
+                    Ok(e) => e,
+                    Err(_) => return,
+                };
+
+                // Route events from session subscriptions directly to SessionManager
+                if self.session_subscriptions.contains(&subid.to_string()) {
+                    tracing::debug!("Routing event kind {} from session subscription {} to SessionManager", event.kind.as_u16(), subid);
+                    if let Some(tx) = &self.session_event_tx {
+                        let _ = tx.send(
+                            nostr_double_ratchet::SessionManagerEvent::ReceivedEvent(event.clone())
+                        );
+                    }
                 }
 
-                // Route to EventBroker handlers BEFORE processing into ndb
-                let event_json = ev.to_string();
-                self.event_broker.process_event(relay, &event_json);
 
                 // Process event into nostrdb
                 let relay_obj = if let Some(r) = self.pool.relays.iter().find(|r| r.url() == relay) {

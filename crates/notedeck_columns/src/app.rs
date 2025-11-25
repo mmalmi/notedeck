@@ -491,6 +491,12 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
                 // DEBUG: Log all events to trace session event flow
                 if kind == 30078 || kind == 1059 || kind == 1060 {
                     info!("DEBUG: Received event kind {} from relay {}", kind, relay);
+                    // Log tags for debugging
+                    for tag in event.tags.iter() {
+                        let tag_slice = tag.as_slice();
+                        let tag_str: Vec<&str> = tag_slice.iter().map(|s| s.as_str()).collect();
+                        info!("DEBUG: Event tag: {:?}", tag_str);
+                    }
                 }
 
                 // Check if this is a WebRTC signaling event (kind 30078 with #l="webrtc" tag)
@@ -502,67 +508,62 @@ fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg
 
                 if is_webrtc {
                     info!("Received kind 30078 event with webrtc tag");
-                    // Handle WebRTC signaling event
-                        let sender_pubkey_hex = hex::encode(event.pubkey.serialize());
-                        info!("Received WebRTC signaling event from {}", sender_pubkey_hex);
+                    let sender_pubkey_hex = hex::encode(event.pubkey.serialize());
+                    info!("Received WebRTC signaling event from {}", sender_pubkey_hex);
 
-                        // Try to parse content - could be plain JSON (hello) or encrypted (signaling)
-                        let content = &event.content;
-                        info!("WebRTC event content (first 100 chars): {}", &content.chars().take(100).collect::<String>());
+                    // Try to parse content - could be plain JSON (hello) or encrypted (signaling)
+                    let content = &event.content;
+                    info!("WebRTC event content (first 100 chars): {}", &content.chars().take(100).collect::<String>());
 
-                        let decrypted_content = if content.starts_with('{') {
-                            // Plain JSON (hello messages)
-                            info!("Content is plaintext JSON");
-                            Some(content.clone())
-                        } else {
-                            // Encrypted message - try to decrypt with NIP-44
-                            info!("Content appears encrypted, attempting decryption");
-                            if let Some(keypair) = ctx.accounts.get_selected_account().key.to_full() {
-                                match nostr::SecretKey::from_slice(keypair.secret_key.as_secret_bytes()) {
-                                    Ok(our_sk) => {
-                                        match nostr::nips::nip44::decrypt(&our_sk, &event.pubkey, content) {
-                                            Ok(plaintext) => {
-                                                debug!("Decrypted WebRTC signaling from {}", sender_pubkey_hex);
-                                                Some(plaintext)
-                                            }
-                                            Err(_) => {
-                                                // Decryption failed - message not for us, silently ignore
-                                                debug!("WebRTC signaling from {} not for us", sender_pubkey_hex);
-                                                None
-                                            }
+                    let decrypted_content = if content.starts_with('{') {
+                        // Plain JSON (hello messages)
+                        info!("Content is plaintext JSON");
+                        Some(content.clone())
+                    } else {
+                        // Encrypted message - try to decrypt with NIP-44
+                        info!("Content appears encrypted, attempting decryption");
+                        if let Some(keypair) = ctx.accounts.get_selected_account().key.to_full() {
+                            match nostr::SecretKey::from_slice(keypair.secret_key.as_secret_bytes()) {
+                                Ok(our_sk) => {
+                                    match nostr::nips::nip44::decrypt(&our_sk, &event.pubkey, content) {
+                                        Ok(plaintext) => {
+                                            debug!("Decrypted WebRTC signaling from {}", sender_pubkey_hex);
+                                            Some(plaintext)
+                                        }
+                                        Err(_) => {
+                                            // Decryption failed - message not for us, silently ignore
+                                            debug!("WebRTC signaling from {} not for us", sender_pubkey_hex);
+                                            None
                                         }
                                     }
-                                    Err(e) => {
-                                        error!("Invalid our secret key: {}", e);
-                                        None
-                                    }
                                 }
-                            } else {
-                                error!("Cannot decrypt WebRTC signaling: no secret key available");
-                                None
-                            }
-                        };
-
-                        // Parse and route decrypted/plain message
-                        if let Some(plaintext) = decrypted_content {
-                            info!("Attempting to parse signaling message from plaintext");
-                            if let Ok(message) = enostr::SignalingMessage::from_json(&plaintext) {
-                                info!("Parsed WebRTC signaling message: {:?}", message);
-                                // Route to WebRTC coordinator for async processing
-                                damus.webrtc_coordinator.process_signaling(sender_pubkey_hex.clone(), message);
-                            } else {
-                                error!("Failed to parse WebRTC signaling message JSON from {}: {}", sender_pubkey_hex, plaintext);
+                                Err(e) => {
+                                    error!("Invalid our secret key: {}", e);
+                                    None
+                                }
                             }
                         } else {
-                            info!("No decrypted content available");
+                            error!("Cannot decrypt WebRTC signaling: no secret key available");
+                            None
                         }
-                    }
-                    // Kind 30078 without webrtc tag is handled by EventBroker
+                    };
 
-                // Route DM-related events (30078 without webrtc, 1059, 1060) to EventBroker
-                if (kind == 30078 && !is_webrtc) || kind == 1059 || kind == 1060 {
-                    ctx.event_broker.process_event(relay, &event_json);
+                    // Parse and route decrypted/plain message
+                    if let Some(plaintext) = decrypted_content {
+                        info!("Attempting to parse signaling message from plaintext");
+                        if let Ok(message) = enostr::SignalingMessage::from_json(&plaintext) {
+                            info!("Parsed WebRTC signaling message: {:?}", message);
+                            // Route to WebRTC coordinator for async processing
+                            damus.webrtc_coordinator.process_signaling(sender_pubkey_hex.clone(), message);
+                        } else {
+                            error!("Failed to parse WebRTC signaling message JSON from {}: {}", sender_pubkey_hex, plaintext);
+                        }
+                    } else {
+                        info!("No decrypted content available");
+                    }
                 }
+                // Note: DM events (1059, 1060, 30078) are routed to SessionManager
+                // via session_subscriptions check in notedeck/src/app.rs
             } else {
                 error!("DEBUG: Failed to parse event JSON from {}", relay);
             }
