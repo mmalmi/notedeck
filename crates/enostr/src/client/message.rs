@@ -24,19 +24,6 @@ pub enum ClientMessage {
     Close {
         sub_id: String,
     },
-    NegOpen {
-        sub_id: String,
-        filter: Filter,
-        id_size: Option<u32>,
-        initial_message: Vec<u8>,
-    },
-    NegClose {
-        sub_id: String,
-    },
-    NegMsg {
-        sub_id: String,
-        message: Vec<u8>,
-    },
     Raw(String),
 }
 
@@ -59,18 +46,6 @@ impl ClientMessage {
         ClientMessage::Close { sub_id }
     }
 
-    pub fn neg_open(sub_id: String, filter: Filter, id_size: Option<u32>, initial_message: Vec<u8>) -> Self {
-        ClientMessage::NegOpen { sub_id, filter, id_size, initial_message }
-    }
-
-    pub fn neg_close(sub_id: String) -> Self {
-        ClientMessage::NegClose { sub_id }
-    }
-
-    pub fn neg_msg(sub_id: String, message: Vec<u8>) -> Self {
-        ClientMessage::NegMsg { sub_id, message }
-    }
-
     pub fn to_json(&self) -> Result<String, Error> {
         Ok(match self {
             Self::Event(ecm) => ecm.to_json(),
@@ -90,22 +65,6 @@ impl ClientMessage {
                 }
             }
             Self::Close { sub_id } => json!(["CLOSE", sub_id]).to_string(),
-            Self::NegOpen { sub_id, filter, id_size, initial_message } => {
-                // Parse filter JSON into serde_json::Value so it's an object, not a string
-                let filter_json_str = filter.json()?;
-                let filter_obj: serde_json::Value = serde_json::from_str(&filter_json_str)?;
-                let init_hex = hex::encode(initial_message);
-                if let Some(size) = id_size {
-                    json!(["NEG-OPEN", sub_id, filter_obj, size, init_hex]).to_string()
-                } else {
-                    json!(["NEG-OPEN", sub_id, filter_obj, init_hex]).to_string()
-                }
-            }
-            Self::NegClose { sub_id } => json!(["NEG-CLOSE", sub_id]).to_string(),
-            Self::NegMsg { .. } => {
-                // NEG-MSG is sent as binary, not JSON
-                return Err(Error::Generic("NEG-MSG must be sent as binary".to_string()));
-            }
         })
     }
 }

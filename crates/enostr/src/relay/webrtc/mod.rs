@@ -10,7 +10,7 @@ pub mod mutual_follows;
 pub use stun_server::StunServer;
 pub use peer_connection::{PeerConnection, PeerConnectionManager};
 pub use heartbeat::{HeartbeatManager, OnlineStatus};
-pub use signaling::SignalingMessage;
+pub use signaling::{SignalingMessage, SignalingType};
 pub use mutual_follows::MutualFollowDetector;
 
 use crate::relay::RelayStatus;

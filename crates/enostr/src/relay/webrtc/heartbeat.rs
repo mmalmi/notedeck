@@ -83,9 +83,7 @@ impl HeartbeatManager {
             let mut interval = time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                // Generate new UUID for each heartbeat to allow tracking session restarts
-                let peer_id = uuid::Uuid::new_v4().to_string();
-                let hello = SignalingMessage::hello(peer_id);
+                let hello = SignalingMessage::hello();
                 if tx.send(hello).is_err() {
                     break;
                 }

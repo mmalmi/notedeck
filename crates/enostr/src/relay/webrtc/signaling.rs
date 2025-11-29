@@ -6,70 +6,67 @@ use serde_json::Value;
 /// Uses Nostr kind 30078 (APP_DATA) with #l="webrtc" tag
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum SignalingMessage {
-    /// WebRTC offer (RTCSessionDescription)
-    Offer {
-        offer: Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
-    /// WebRTC answer (RTCSessionDescription)
-    Answer {
-        answer: Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
+pub enum SignalingType {
+    /// WebRTC offer
+    Offer { sdp: String },
+    /// WebRTC answer
+    Answer { sdp: String },
     /// ICE candidate
-    Candidate {
-        candidate: Value,
-        recipient: String,
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
+    Candidate { candidate: Option<Value> },
     /// Online heartbeat (hello message)
-    /// peerId is a session-unique UUID to distinguish multiple devices/tabs
-    Hello {
-        #[serde(rename = "peerId")]
-        peer_id: String,
-    },
+    Hello,
+}
+
+/// Signaling message wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalingMessage {
+    #[serde(flatten)]
+    pub msg_type: SignalingType,
+
+    /// Timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
 }
 
 impl SignalingMessage {
     /// Create an offer message
-    /// offer should be an RTCSessionDescription object (with type and sdp fields)
-    pub fn offer(offer: Value, recipient: String, peer_id: String) -> Self {
-        Self::Offer {
-            offer,
-            recipient,
-            peer_id,
+    pub fn offer(sdp: String) -> Self {
+        Self {
+            msg_type: SignalingType::Offer { sdp },
+            timestamp: Some(Self::current_timestamp()),
         }
     }
 
     /// Create an answer message
-    /// answer should be an RTCSessionDescription object (with type and sdp fields)
-    pub fn answer(answer: Value, recipient: String, peer_id: String) -> Self {
-        Self::Answer {
-            answer,
-            recipient,
-            peer_id,
+    pub fn answer(sdp: String) -> Self {
+        Self {
+            msg_type: SignalingType::Answer { sdp },
+            timestamp: Some(Self::current_timestamp()),
         }
     }
 
     /// Create a candidate message
-    pub fn candidate(candidate: Value, recipient: String, peer_id: String) -> Self {
-        Self::Candidate {
-            candidate,
-            recipient,
-            peer_id,
+    pub fn candidate(candidate: Option<Value>) -> Self {
+        Self {
+            msg_type: SignalingType::Candidate { candidate },
+            timestamp: Some(Self::current_timestamp()),
         }
     }
 
     /// Create a hello (heartbeat) message
-    /// peer_id should be a session-unique UUID (e.g., uuid::Uuid::new_v4().to_string())
-    pub fn hello(peer_id: String) -> Self {
-        Self::Hello { peer_id }
+    pub fn hello() -> Self {
+        Self {
+            msg_type: SignalingType::Hello,
+            timestamp: Some(Self::current_timestamp()),
+        }
+    }
+
+    /// Get current Unix timestamp in milliseconds
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
     }
 
     /// Serialize to JSON
@@ -130,39 +127,25 @@ impl WebRTCSignalingEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_signaling_message_serialization() {
-        let offer_desc = json!({"type": "offer", "sdp": "test-sdp"});
-        let offer = SignalingMessage::offer(
-            offer_desc,
-            "recipient-pubkey".to_string(),
-            "test-peer-id".to_string(),
-        );
+        let offer = SignalingMessage::offer("test-sdp".to_string());
         let json = offer.to_json().unwrap();
         assert!(json.contains("\"type\":\"offer\""));
-        assert!(json.contains("\"offer\":{"));
-        assert!(json.contains("\"recipient\":\"recipient-pubkey\""));
-        assert!(json.contains("\"peerId\":\"test-peer-id\""));
+        assert!(json.contains("\"sdp\":\"test-sdp\""));
 
-        let hello = SignalingMessage::hello("test-peer-id".to_string());
+        let hello = SignalingMessage::hello();
         let json = hello.to_json().unwrap();
         assert!(json.contains("\"type\":\"hello\""));
-        assert!(json.contains("\"peerId\":\"test-peer-id\""));
     }
 
     #[test]
     fn test_signaling_message_deserialization() {
-        // iris-client format
-        let json = r#"{"type":"offer","offer":{"type":"offer","sdp":"test-sdp"},"recipient":"abc","peerId":"xyz"}"#;
+        let json = r#"{"type":"offer","sdp":"test-sdp","timestamp":1234567890}"#;
         let msg = SignalingMessage::from_json(json).unwrap();
-        match msg {
-            SignalingMessage::Offer { offer, recipient, peer_id } => {
-                assert_eq!(offer["sdp"], "test-sdp");
-                assert_eq!(recipient, "abc");
-                assert_eq!(peer_id, "xyz");
-            }
+        match msg.msg_type {
+            SignalingType::Offer { sdp } => assert_eq!(sdp, "test-sdp"),
             _ => panic!("Expected offer message"),
         }
     }

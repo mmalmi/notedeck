@@ -18,8 +18,6 @@ pub enum RelayMessage<'a> {
     Eose(&'a str),
     Event(&'a str, &'a str),
     Notice(&'a str),
-    NegMsg(&'a str, &'a [u8]), // sub_id, payload
-    NegErr(&'a str, &'a str),  // sub_id, error
 }
 
 #[derive(Debug)]
@@ -49,13 +47,6 @@ impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
                 Ok(msg) => msg,
                 Err(err) => RelayEvent::Error(err),
             },
-            WsMessage::Binary(_data) => {
-                // NEG-MSG (NIP-77) - binary negentropy message
-                // We'll handle parsing the subscription ID from binary data
-                // For now, we'll store the full binary payload
-                // The pool will need to match it to the active negentropy subscription
-                RelayEvent::Other(wsmsg)
-            }
             wsmsg => RelayEvent::Other(wsmsg),
         }
     }
@@ -90,49 +81,6 @@ impl<'a> RelayMessage<'a> {
         // make sure we can inspect the begning of the message below ...
         if msg.len() < 12 {
             return Err(Error::DecodeFailed("message too short".into()));
-        }
-
-        // NEG-MSG (NIP-77 JSON format)
-        // Relay response format: ["NEG-MSG", <subscription_id>, <hex-encoded message>]
-        if msg.len() >= 12 && &msg[0..=10] == "[\"NEG-MSG\"," {
-            let mut start = 12;
-            while let Some(&b' ') = msg.as_bytes().get(start) {
-                start += 1;
-            }
-            if let Some(comma_index) = msg[start..].find(',') {
-                let subid_end = start + comma_index;
-                let subid = &msg[start..subid_end].trim().trim_matches('"');
-                let mut hex_start = subid_end + 1;
-                while let Some(&b' ') = msg.as_bytes().get(hex_start) {
-                    hex_start += 1;
-                }
-                let hex_msg = &msg[hex_start..msg.len()-2].trim().trim_matches('"');
-                // Decode hex to bytes - will be handled by pool
-                if let Ok(payload) = hex::decode(hex_msg) {
-                    // Store hex string as bytes for now, pool will handle reconciliation
-                    // We'll use a static allocation for lifetime
-                    return Ok(RelayMessage::NegMsg(subid, Box::leak(payload.into_boxed_slice())));
-                }
-            }
-        }
-
-        // NEG-ERR (NIP-77)
-        // Relay response format: ["NEG-ERR", <subscription_id>, <error>]
-        if msg.len() >= 12 && &msg[0..=10] == "[\"NEG-ERR\"," {
-            let mut start = 12;
-            while let Some(&b' ') = msg.as_bytes().get(start) {
-                start += 1;
-            }
-            if let Some(comma_index) = msg[start..].find(',') {
-                let subid_end = start + comma_index;
-                let subid = &msg[start..subid_end].trim().trim_matches('"');
-                let mut err_start = subid_end + 1;
-                while let Some(&b' ') = msg.as_bytes().get(err_start) {
-                    err_start += 1;
-                }
-                let err_msg = &msg[err_start..msg.len()-2].trim().trim_matches('"');
-                return Ok(RelayMessage::NegErr(subid, err_msg));
-            }
         }
 
         // Notice
@@ -197,37 +145,20 @@ impl<'a> RelayMessage<'a> {
         }
 
         // OK (NIP-20)
-        // Relay response format: ["OK", <event_id>, <true|false>, <message>]
-        // Handle both compact ["OK","id",true,""] and spaced ["OK", "id", true, ""] formats
-        if msg.starts_with("[\"OK\"") {
-            // Skip ["OK" then find the event_id which is a 64 char hex in quotes
-            // Find second quote pair (first is "OK")
-            let after_ok = &msg[5..]; // Skip [\"OK\"
-            if let Some(comma_pos) = after_ok.find(',') {
-                let after_comma = &after_ok[comma_pos+1..].trim_start();
-                // Now find the event_id in quotes
-                if after_comma.starts_with('"') {
-                    if let Some(end_quote) = after_comma[1..].find('"') {
-                        let event_id = &after_comma[1..end_quote+1];
-
-                        // Find boolean after the event_id
-                        let after_id = &after_comma[end_quote+2..];
-                        let status = if after_id.contains("true") {
-                            true
-                        } else if after_id.contains("false") {
-                            false
-                        } else {
-                            return Err(Error::DecodeFailed("bad boolean value".into()));
-                        };
-
-                        // Extract message (last quoted string)
-                        let message_start = msg.rfind(',').unwrap() + 1;
-                        let message = &msg[message_start..msg.len() - 1].trim().trim_matches(']').trim().trim_matches('"');
-                        return Ok(Self::ok(event_id, status, message));
-                    }
-                }
-            }
-            return Err(Error::DecodeFailed("malformed OK message".into()));
+        // Relay response format: ["OK",<event_id>, <true|false>, <message>]
+        if &msg[0..=5] == "[\"OK\"," && msg.len() >= 78 {
+            let event_id = &msg[7..71];
+            let booly = &msg[73..77];
+            let status: bool = if booly == "true" {
+                true
+            } else if booly == "false" {
+                false
+            } else {
+                return Err(Error::DecodeFailed("bad boolean value".into()));
+            };
+            let message_start = msg.rfind(',').unwrap() + 1;
+            let message = &msg[message_start..msg.len() - 2].trim().trim_matches('"');
+            return Ok(Self::ok(event_id, status, message));
         }
 
         Err(Error::DecodeFailed(format!(
@@ -285,23 +216,6 @@ mod tests {
                     "pow: difficulty 25>=24",
                 )),
             ),
-            // Spaced format (like nostr.wine sends)
-            (
-                r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", true, ""]"#,
-                Ok(RelayMessage::ok(
-                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
-                    true,
-                    "",
-                )),
-            ),
-            (
-                r#"["OK", "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30", false, "duplicate:"]"#,
-                Ok(RelayMessage::ok(
-                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
-                    false,
-                    "duplicate:",
-                )),
-            ),
             // Invalid cases
             (
                 r#"["EVENT","random_string"]"#,
@@ -321,11 +235,11 @@ mod tests {
             ),
             (
                 r#"["OK","event_id"]"#,
-                Err(Error::DecodeFailed("bad boolean value".into())),
+                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"event_id\"]'".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#,
-                Err(Error::DecodeFailed("bad boolean value".into())),
+                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30\"]'".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#,

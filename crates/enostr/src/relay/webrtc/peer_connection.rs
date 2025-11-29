@@ -37,8 +37,6 @@ pub struct PeerConnection {
     pub peer_pubkey: String,
     pub state: PeerConnectionState,
     pub pc: Arc<RTCPeerConnection>,
-    /// Our unique peer ID for this session
-    pub our_peer_id: String,
 
     // Four data channels as per iris-client protocol
     pub json_channel: Arc<RwLock<Option<Arc<RTCDataChannel>>>>,      // Nostr protocol (REQ/EVENT/EOSE/CLOSE)
@@ -56,7 +54,6 @@ impl PeerConnection {
     /// Uses STUN servers compatible with iris-client (Google and Cloudflare)
     pub async fn new(
         peer_pubkey: String,
-        our_peer_id: String,
         outgoing_messages: mpsc::UnboundedSender<SignalingMessage>,
     ) -> Result<Self> {
         // Configure ICE servers (same as iris-client)
@@ -101,7 +98,6 @@ impl PeerConnection {
             peer_pubkey: peer_pubkey.clone(),
             state: PeerConnectionState::New,
             pc: pc.clone(),
-            our_peer_id: our_peer_id.clone(),
             json_channel: Arc::new(RwLock::new(None)),
             file_channel: Arc::new(RwLock::new(None)),
             call_signaling: Arc::new(RwLock::new(None)),
@@ -120,12 +116,10 @@ impl PeerConnection {
         let pc = self.pc.clone();
         let peer_pubkey = self.peer_pubkey.clone();
         let outgoing = self.outgoing_messages.clone();
-        let our_peer_id = self.our_peer_id.clone();
 
         // Handle ICE connection state changes
-        let peer_pubkey_for_ice = peer_pubkey.clone();
         pc.on_ice_connection_state_change(Box::new(move |state: RTCIceConnectionState| {
-            let peer = peer_pubkey_for_ice.clone();
+            let peer = peer_pubkey.clone();
             Box::pin(async move {
                 info!("WebRTC: ICE connection state changed to {} for peer {}", state, peer);
             })
@@ -141,21 +135,16 @@ impl PeerConnection {
         }));
 
         // Handle ICE candidates
-        let recipient = peer_pubkey.clone();
         pc.on_ice_candidate(Box::new(move |candidate: Option<RTCIceCandidate>| {
             let outgoing = outgoing.clone();
-            let recipient = recipient.clone();
-            let peer_id = our_peer_id.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
                     debug!("WebRTC: New ICE candidate: {:?}", candidate);
                     // Send candidate to peer via Nostr signaling
-                    if let Some(candidate_value) = candidate.to_json().ok()
-                        .and_then(|init| serde_json::to_value(&init).ok())
-                    {
-                        let msg = SignalingMessage::candidate(candidate_value, recipient, peer_id);
-                        let _ = outgoing.send(msg);
-                    }
+                    let candidate_json = candidate.to_json().ok()
+                        .and_then(|init| serde_json::to_value(&init).ok());
+                    let msg = SignalingMessage::candidate(candidate_json);
+                    let _ = outgoing.send(msg);
                 }
             })
         }));
@@ -303,22 +292,13 @@ impl PeerConnection {
 /// Manager for all peer connections
 pub struct PeerConnectionManager {
     peers: HashMap<String, Arc<RwLock<PeerConnection>>>,
-    /// Track online peers with their peer IDs (pubkey:uuid format)
-    online_peers: HashMap<String, String>, // pubkey -> peer_id mapping
-    our_peer_id: Option<String>,
 }
 
 impl PeerConnectionManager {
     pub fn new() -> Self {
         Self {
             peers: HashMap::new(),
-            online_peers: HashMap::new(),
-            our_peer_id: None,
         }
-    }
-
-    pub fn set_our_peer_id(&mut self, peer_id: String) {
-        self.our_peer_id = Some(peer_id);
     }
 
     /// Add a new peer connection
@@ -343,80 +323,16 @@ impl PeerConnectionManager {
         message: SignalingMessage,
         outgoing_tx: mpsc::UnboundedSender<(String, SignalingMessage)>,
     ) -> Result<()> {
-        match message {
-            SignalingMessage::Hello { peer_id } => {
-                info!("Received hello from {} (peer_id: {})", peer_pubkey, peer_id);
+        use super::signaling::SignalingType;
 
-                // Skip our own messages (same session)
-                if let Some(our_id) = &self.our_peer_id {
-                    if our_id == &peer_id {
-                        info!("Ignoring hello from self (same peer_id)");
-                        return Ok(());
-                    }
-                }
-
-                // Track online peer
-                self.online_peers.insert(peer_pubkey.to_string(), peer_id.clone());
-
-                // Check if we already have a connection to this peer
-                if self.get_peer(peer_pubkey).is_some() {
-                    info!("Already have connection to peer {}", peer_pubkey);
-                    return Ok(());
-                }
-
-                info!("Checking if should initiate connection");
-
-                // Tie-breaking: only initiate if our peer_id is smaller (iris-compatible)
-                let should_initiate = if let Some(our_id) = &self.our_peer_id {
-                    let result = our_id < &peer_id;
-                    info!("Tie-breaking: our_id={} vs their_id={}, should_initiate={}", our_id, peer_id, result);
-                    result
-                } else {
-                    info!("No our_peer_id set, cannot initiate connection");
-                    return Ok(());
-                };
-
-                if should_initiate {
-                    info!("Initiating WebRTC connection to {} (our_id < their_id)", peer_pubkey);
-
-                    // Create new peer connection
-                    let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
-                    let our_id = self.our_peer_id.clone().unwrap_or_default();
-                    let new_peer = PeerConnection::new(peer_pubkey.to_string(), our_id, msg_tx).await?;
-                    let peer_arc = Arc::new(RwLock::new(new_peer));
-                    self.add_peer(peer_pubkey.to_string(), peer_arc.clone());
-
-                    // Create and send offer
-                    let offer_desc = {
-                        let peer_lock = peer_arc.read().await;
-                        peer_lock.create_offer().await?
-                    };
-
-                    // Create RTCSessionDescription object (iris-compatible format)
-                    let offer_value = serde_json::json!({
-                        "type": "offer",
-                        "sdp": offer_desc.sdp
-                    });
-                    let our_peer_id = self.our_peer_id.clone().unwrap_or_default();
-                    let offer_msg = SignalingMessage::offer(offer_value, peer_pubkey.to_string(), our_peer_id);
-                    if let Err(e) = outgoing_tx.send((peer_pubkey.to_string(), offer_msg)) {
-                        error!("Failed to queue offer message: {}", e);
-                    } else {
-                        info!("Sent offer to {}", peer_pubkey);
-                    }
-                } else {
-                    info!("Waiting for peer {} to initiate (their_id < our_id)", peer_pubkey);
-                }
-
+        match message.msg_type {
+            SignalingType::Hello => {
+                info!("Received hello from {}", peer_pubkey);
+                // TODO: Update online status / heartbeat
                 Ok(())
             }
-            SignalingMessage::Offer { offer, recipient: _, peer_id: _ } => {
+            SignalingType::Offer { sdp } => {
                 info!("Received offer from {}", peer_pubkey);
-
-                // Extract SDP from the offer object
-                let sdp = offer["sdp"].as_str().ok_or_else(|| {
-                    crate::Error::Generic("Offer missing sdp field".to_string())
-                })?.to_string();
 
                 // Get or create peer connection
                 let peer = if let Some(p) = self.get_peer(peer_pubkey) {
@@ -424,8 +340,7 @@ impl PeerConnectionManager {
                 } else {
                     // Create new peer connection
                     let (msg_tx, _msg_rx) = mpsc::unbounded_channel();
-                    let our_id = self.our_peer_id.clone().unwrap_or_default();
-                    let new_peer = PeerConnection::new(peer_pubkey.to_string(), our_id, msg_tx).await?;
+                    let new_peer = PeerConnection::new(peer_pubkey.to_string(), msg_tx).await?;
                     let peer_arc = Arc::new(RwLock::new(new_peer));
                     self.add_peer(peer_pubkey.to_string(), peer_arc.clone());
                     peer_arc
@@ -440,26 +355,16 @@ impl PeerConnectionManager {
                 let answer_desc = peer_lock.handle_offer(offer_desc).await?;
                 drop(peer_lock); // Release lock before sending
 
-                // Send answer back (iris-compatible format)
-                let answer_value = serde_json::json!({
-                    "type": "answer",
-                    "sdp": answer_desc.sdp
-                });
-                let our_peer_id = self.our_peer_id.clone().unwrap_or_default();
-                let answer_msg = SignalingMessage::answer(answer_value, peer_pubkey.to_string(), our_peer_id);
+                // Send answer back
+                let answer_msg = SignalingMessage::answer(answer_desc.sdp);
                 if let Err(e) = outgoing_tx.send((peer_pubkey.to_string(), answer_msg)) {
                     error!("Failed to queue answer message: {}", e);
                 }
 
                 Ok(())
             }
-            SignalingMessage::Answer { answer, recipient: _, peer_id: _ } => {
+            SignalingType::Answer { sdp } => {
                 info!("Received answer from {}", peer_pubkey);
-
-                // Extract SDP from the answer object
-                let sdp = answer["sdp"].as_str().ok_or_else(|| {
-                    crate::Error::Generic("Answer missing sdp field".to_string())
-                })?.to_string();
 
                 if let Some(peer) = self.get_peer(peer_pubkey) {
                     let peer_lock = peer.read().await;
@@ -473,18 +378,20 @@ impl PeerConnectionManager {
 
                 Ok(())
             }
-            SignalingMessage::Candidate { candidate, recipient: _, peer_id: _ } => {
+            SignalingType::Candidate { candidate } => {
                 info!("Received ICE candidate from {}", peer_pubkey);
 
                 if let Some(peer) = self.get_peer(peer_pubkey) {
-                    // Parse candidate JSON
-                    let candidate_init: RTCIceCandidateInit =
-                        serde_json::from_value(candidate).map_err(|e| {
-                            crate::Error::Generic(format!("Failed to parse ICE candidate: {}", e))
-                        })?;
+                    if let Some(candidate_value) = candidate {
+                        // Parse candidate JSON
+                        let candidate_init: RTCIceCandidateInit =
+                            serde_json::from_value(candidate_value).map_err(|e| {
+                                crate::Error::Generic(format!("Failed to parse ICE candidate: {}", e))
+                            })?;
 
-                    let peer_lock = peer.read().await;
-                    peer_lock.add_ice_candidate(candidate_init).await?;
+                        let peer_lock = peer.read().await;
+                        peer_lock.add_ice_candidate(candidate_init).await?;
+                    }
                 } else {
                     warn!("Received ICE candidate from unknown peer: {}", peer_pubkey);
                 }

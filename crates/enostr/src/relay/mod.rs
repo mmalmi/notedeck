@@ -12,7 +12,6 @@ use std::net::Ipv4Addr;
 use tracing::{debug, error};
 
 pub mod message;
-pub mod negentropy;
 pub mod pool;
 pub mod subs_debug;
 pub mod webrtc;
@@ -120,21 +119,7 @@ pub fn setup_multicast_relay(
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
     let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
 
-    // Create socket with SO_REUSEADDR for multiple instances
-    use socket2::{Domain, Protocol, Socket, Type};
-
-    let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket2.set_reuse_address(true)?;
-
-    // SO_REUSEPORT for Unix (allows multiple binds to same port)
-    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    socket2.set_reuse_port(true)?;
-
-    socket2.bind(&address.into())?;
-    socket2.set_nonblocking(true)?;
-
-    let std_socket: std::net::UdpSocket = socket2.into();
-    let mut socket = UdpSocket::from_std(std_socket);
+    let mut socket = UdpSocket::bind(address)?;
     let interface = Ipv4Addr::UNSPECIFIED;
     let multicast_address = SocketAddrV4::new(multicast_ip, port);
 
@@ -210,30 +195,19 @@ impl Relay {
     }
 
     pub fn send(&mut self, msg: &ClientMessage) {
-        match msg {
-            ClientMessage::NegMsg { sub_id, message } => {
-                // NIP-77 standard: JSON with hex encoding (strfry compatible)
-                let hex_msg = hex::encode(message);
-                let json = serde_json::json!(["NEG-MSG", sub_id, hex_msg]).to_string();
-                debug!("sending NEG-MSG JSON ({} bytes hex) for sub {} to {}", hex_msg.len(), sub_id, self.url);
-                self.sender.send(WsMessage::Text(json));
+        let json = match msg.to_json() {
+            Ok(json) => {
+                debug!("sending {} to {}", json, self.url);
+                json
             }
-            _ => {
-                let json = match msg.to_json() {
-                    Ok(json) => {
-                        debug!("sending {} to {}", json, self.url);
-                        json
-                    }
-                    Err(e) => {
-                        error!("error serializing json for filter: {e}");
-                        return;
-                    }
-                };
+            Err(e) => {
+                error!("error serializing json for filter: {e}");
+                return;
+            }
+        };
 
-                let txt = WsMessage::Text(json);
-                self.sender.send(txt);
-            }
-        }
+        let txt = WsMessage::Text(json);
+        self.sender.send(txt);
     }
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
